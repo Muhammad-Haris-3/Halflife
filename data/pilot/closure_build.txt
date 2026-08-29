@@ -1,0 +1,23 @@
+seed packages: 79
+--- depth 0 -> 1 : expanding 79 packages
+    depth 1 added 754 -> closure now 833
+--- depth 1 -> 2 : expanding 754 packages
+    250/754 expanded, closure=1149, fetched=329
+    500/754 expanded, closure=1419, fetched=579
+    750/754 expanded, closure=1645, fetched=829
+    depth 2 added 813 -> closure now 1646
+--- depth 2 -> 3 : expanding 813 packages
+    250/813 expanded, closure=1810, fetched=1083
+    500/813 expanded, closure=2035, fetched=1333
+    750/813 expanded, closure=2224, fetched=1583
+    depth 3 added 602 -> closure now 2248
+
+CLOSURE BY DEPTH
+  depth 0:     79 new   cumulative     79
+  depth 1:    754 new   cumulative    833
+  depth 2:    813 new   cumulative   1646
+  depth 3:    602 new   cumulative   2248
+total closure: 2248 packages (1646 fetches, 0 manifests unavailable)
+wrote frame/frame.json
+
+[exited with code 0]

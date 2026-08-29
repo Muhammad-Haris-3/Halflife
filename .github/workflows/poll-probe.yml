@@ -1,0 +1,50 @@
+# Establishes the weekly poll rate on clean infrastructure.
+#
+# This is the measurement PREREGISTRATION.md §10 leaves open and the only thing
+# blocking the frame freeze. It must run here rather than locally: the local
+# figures were taken from an IP this project had already throttled into a
+# penalty box, and are a measurement of that penalty box rather than of npm.
+#
+# Manual only. It is a one-time proof, not a schedule.
+name: poll-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: Packages to sample, even stride across the rank order
+        default: "600"
+      workers:
+        description: Concurrent workers (the poll runs at this concurrency too)
+        default: "4"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Probe the npm per-version endpoint
+        # Does not fail the job on a "does not fit" verdict — that is a finding
+        # to read, not a broken build. The verdict is in the log and the artifact.
+        run: |
+          python scripts/poll_probe.py \
+            --sample "${{ inputs.sample }}" \
+            --workers "${{ inputs.workers }}" \
+            --json-out probe.json || true
+
+      - name: Pre-freeze report at the proven rate
+        run: |
+          RATE=$(python -c "import json;print(json.load(open('probe.json'))['seconds_per_package'])")
+          echo "proven rate: $RATE s/pkg"
+          HALFLIFE_POLL_PROVEN_SECONDS="$RATE" python scripts/prefreeze_report.py || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poll-probe
+          path: probe.json

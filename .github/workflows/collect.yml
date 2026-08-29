@@ -1,0 +1,83 @@
+# The weekly poll.
+#
+# Two independent cron windows rather than one, per PREREGISTRATION.md §10.
+# GitHub's scheduler drops windows outright. With a single weekly entry a dropped
+# window costs a full week of the pre-period for every package in the frame, and
+# unlike an hourly feed there is no way to recover it — npm keeps seven days and
+# archives nothing. The second window is a retry of the first: the collector
+# resumes into the same ISO-week partition and skips whatever the first window
+# already captured, so a successful Monday makes Wednesday nearly free.
+#
+# The collector refuses to write anything until frame/MANIFEST exists. That is
+# deliberate: a snapshot taken before the freeze commit would make the frame a
+# description of what was seen rather than a rule fixed in advance.
+name: collect
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"     # Monday 06:00 UTC — primary window
+    - cron: "0 6 * * 3"     # Wednesday 06:00 UTC — recovery window
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: Concurrent workers
+        default: "4"
+
+concurrency:
+  # Never two polls at once: they would race on the same snapshot file and
+  # double-count packages in the register.
+  group: halflife-collect
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350        # inside the 6 h ceiling, with room to commit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Refuse to collect against an unfrozen frame
+        run: |
+          if [ ! -f frame/MANIFEST ]; then
+            echo "frame/MANIFEST does not exist — the frame is not frozen."
+            echo "The first snapshot must not precede the freeze commit."
+            echo "See PREREGISTRATION.md §2.1."
+            exit 1
+          fi
+
+      - name: Poll
+        run: python scripts/collect.py --workers "${{ inputs.workers || 4 }}"
+
+      - name: Commit the week into the register
+        # The register's integrity claim rests on git history, so the poll is not
+        # finished until it is committed (§10.4). Rebase-and-retry because the
+        # recovery window may race a manual run.
+        run: |
+          git config user.name  "halflife-collector"
+          git config user.email "halflife-collector@users.noreply.github.com"
+          git add data/register
+          if git diff --cached --quiet; then
+            echo "nothing to commit — no new package-weeks captured"
+            exit 0
+          fi
+          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
+          git commit -m "Register: week ${WEEK}"
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push && exit 0
+            echo "push failed, retry $i"
+            sleep 5
+          done
+          exit 1
+
+      - name: Run record
+        if: always()
+        run: |
+          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
+          test -f "data/register/${WEEK}/run.json" && cat "data/register/${WEEK}/run.json"

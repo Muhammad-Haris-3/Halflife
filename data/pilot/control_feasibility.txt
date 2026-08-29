@@ -1,0 +1,22 @@
+
+MATCHED-CONTROL FEASIBILITY — superseded versions only (latest excluded)
+------------------------------------------------------------------------------------------------------------
+package            adv  ctrl   medAgeA   medAgeC   ovlpA   ovlpC     ctrl wk dl
+------------------------------------------------------------------------------------------------------------
+js-yaml             81     8      4005        20       0       0              0
+axios              139     4      1311        70       0       0              0
+lodash             115     1      4113       149       0       0              0
+tar                151     1      2529        37       0       0              0
+ws                 175    12      3201        44       0       0              0
+qs                 147     1      3461       103       0       0              0
+semver              95    23      4171       840      95       0              0
+cross-spawn         55     2      3924       652       1       1      1,054,039
+cookie              25     9      3997       685       0       0              0
+body-parser         82     1      4197        49       0       0              0
+node-fetch          80    15      3112      1322      11       5     14,282,095
+minimist            27     3      4399      1416       2       2      8,547,570
+json5               24     2      3256      1343       0       0              0
+tough-cookie        41    17      4139       596       0       0              0
+------------------------------------------------------------------------------------------------------------
+packages with an age-overlapping control arm: 3 / 14
+OSV range events fully semver-parseable: 192 / 192 = 100.0%

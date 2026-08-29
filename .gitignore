@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+data/raw/
+.venv/
+frame/all_names.txt
+frame/dl_unscoped.tsv
+# frame/candidates.tsv is the frozen input to the frame (PREREGISTRATION.md §2.1).
+# ecosyste.ms rank drifts daily, so the frame is only reproducible if it is committed.
+frame/verified.tsv

@@ -1,0 +1,6 @@
+workers=4   400 pkgs in 520.5s  =  0.77 pkg/s  429s=643   avg 2.0 KB
+            -> 40,000 pkgs =   867 min (14.5 h)
+workers=8   400 pkgs in 376.7s  =  1.06 pkg/s  429s=931   avg 1.3 KB
+            -> 40,000 pkgs =   628 min (10.5 h)
+
+[exited with code 0]

@@ -1,0 +1,29 @@
+sampling unscoped localities...
+sampling scoped localities...
+sampled: unscoped=2700 scoped=900
+ bulkfail HTTP Error 429: Too Many Requests
+ bulkfail HTTP Error 429: Too Many Requests
+ bulkfail HTTP Error 429: Too Many Requests
+unscoped resolved 2322
+scoped resolved 875
+
+ESTIMATED npm PACKAGES ABOVE EACH WEEKLY-DOWNLOAD THRESHOLD
+  strata: unscoped N=2,682,522 (sample 2322) | scoped N=1,653,334 (sample 875)
+--------------------------------------------------------------------------------------
+threshold    hits_u   hits_s  est. packages                     95% CI
+--------------------------------------------------------------------------------------
+>= 1M             6        0          6,932   1,392 - 12,471
+>= 100k          10        0         11,553   4,408 - 18,698
+>= 50k           11        0         12,708   5,216 - 20,200
+>= 10k           18        0         20,795   11,225 - 30,364
+>= 5k            20        0         23,105   13,023 - 33,188
+>= 1k            30        1         36,547   23,682 - 49,413
+--------------------------------------------------------------------------------------
+  cohort >=1M    poll time @0.85s/pkg:   1.6 hours   weekly raw @14.1KB:     95 MB
+  cohort >=100k  poll time @0.85s/pkg:   2.7 hours   weekly raw @14.1KB:    159 MB
+  cohort >=50k   poll time @0.85s/pkg:   3.0 hours   weekly raw @14.1KB:    175 MB
+  cohort >=10k   poll time @0.85s/pkg:   4.9 hours   weekly raw @14.1KB:    286 MB
+  cohort >=5k    poll time @0.85s/pkg:   5.5 hours   weekly raw @14.1KB:    318 MB
+  cohort >=1k    poll time @0.85s/pkg:   8.6 hours   weekly raw @14.1KB:    503 MB
+
+[exited with code 0]

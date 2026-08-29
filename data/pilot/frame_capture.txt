@@ -1,0 +1,52 @@
+frame: 2248 packages (seed 79, depth<=3)
+advisory sample: 600 advisories over 70 days, 2026-06-18..2026-08-27
+  279 distinct advised packages, 928 advisory-package pairs
+
+CAPTURE BY DEPTH CUTOFF
+--------------------------------------------------------------------------------------------
+depth<=  frame size   advised in  % pkgs caught   % advisories  w/ >=10k dl
+--------------------------------------------------------------------------------------------
+0                79           10           3.6%           8.2%         7.8%
+1               833           25           9.0%          15.0%        14.4%
+2              1646           32          11.5%          18.2%        17.3%
+3              2248           35          12.5%          19.2%        18.3%
+--------------------------------------------------------------------------------------------
+
+MISSED ADVISORIES, RANKED BY WEEKLY DOWNLOADS  (frame would not have seen these)
+------------------------------------------------------------------------------
+     175,503,782  pnpm                                     31 advisories
+      62,680,490  dompurify                                2 advisories
+      58,685,094  hono                                     7 advisories
+      55,336,252  @hono/node-server                        3 advisories
+      34,320,857  linkify-it                               2 advisories
+      31,164,675  websocket-driver                         2 advisories
+      26,229,883  extract-zip                              1 advisory
+      25,034,197  pdfjs-dist                               1 advisory
+      22,699,267  @anthropic-ai/claude-code                2 advisories
+      21,187,171  adm-zip                                  1 advisory
+      19,243,722  crypto-js                                1 advisory
+      18,319,576  deepmerge-ts                             1 advisory
+      18,245,585  valibot                                  1 advisory
+      15,212,808  mermaid                                  8 advisories
+      13,336,641  morgan                                   1 advisory
+------------------------------------------------------------------------------
+  missed packages with >=10k weekly downloads: 102 (507 advisories)
+  missed packages with 0 downloads (removed/malware): 62
+
+CAUGHT, RANKED BY WEEKLY DOWNLOADS
+------------------------------------------------------------------------------
+     612,710,979  brace-expansion                          depth 2
+     296,533,127  js-yaml                                  depth 1
+     280,270,306  postcss                                  depth 0
+     242,324,501  nanoid                                   depth 1
+     169,849,602  undici                                   depth 1
+     138,647,450  body-parser                              depth 1
+     128,282,651  fast-uri                                 depth 2
+     121,741,524  axios                                    depth 0
+      92,099,641  sharp                                    depth 2
+      88,932,864  ip-address                               depth 3
+      87,699,722  tar                                      depth 3
+      83,425,238  fast-xml-parser                          depth 3
+      82,328,769  protobufjs                               depth 2
+      78,440,857  shell-quote                              depth 2
+      54,611,955  next                                     depth 0

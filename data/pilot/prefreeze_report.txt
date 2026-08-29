@@ -1,0 +1,41 @@
+============================================================================
+HALFLIFE — PRE-FREEZE REPORT
+============================================================================
+
+1. FRAME
+   rule           : top-N npm packages by ecosyste.ms download rank, frozen at build date
+   built          : 2026-08-28
+   size           : 40,000  (20,487 scoped, 19,513 unscoped)
+
+2. ADVISORY CAPTURE  (measured, not estimated)
+   sample         : 600 advisories / 70 days, 2026-06-18..2026-08-27
+   advised pkgs   : 138 of 279 in frame
+   captured       : 639 of 928 advisories = 68.9%
+
+3. COVERAGE CHECK — does the frame miss anything the analysis could admit?
+   §3 admits packages at >= 10,000 weekly downloads.
+   advised packages outside frame at/above that floor: 20
+     largest misses:
+             58,089  @apify/actors-mcp-server           1 adv
+             29,074  ghost                              17 adv
+             25,782  js-toml                            2 adv
+             24,833  meshcentral                        1 adv
+             24,238  waku                               2 adv
+             23,362  @nx/azure-cache                    1 adv
+             22,922  directus                           2 adv
+             21,131  mcp-searxng                        5 adv
+   largest advised package outside frame: 58,089 weekly
+   advisories on those packages: 84 of 928 = 9.1% of admissible events lost
+   ACCEPTED — §2.3 measured this cost and took it. Does not block the freeze.
+   It is published alongside every result, per §2.3.
+
+4. POLL COST  (PREREGISTRATION.md §10)
+   UNRESOLVED — no proven rate on a clean runner.
+   Local measurements are contaminated: 0.77-1.06 pkg/s with 643-931 429s
+   after this project throttled its own IP. Establish the rate on GitHub
+   Actions, then re-run with HALFLIFE_POLL_PROVEN_SECONDS=<s per pkg>.
+
+============================================================================
+VERDICT: NOT FIT TO FREEZE
+         (frame content is sound; blocked only on the §10 poll-cost proof)
+============================================================================

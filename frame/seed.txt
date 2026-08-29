@@ -1,0 +1,112 @@
+# Halflife frame seed — candidate, NOT FROZEN
+#
+# Roots chosen to span the JS ecosystem's functional areas rather than to
+# maximise download counts. One package per line, comments and blanks ignored.
+# The frame is the dependency closure of this list (see PREREGISTRATION.md §2.1).
+#
+# Frozen only when frame/MANIFEST records a hash for it.
+
+# --- UI frameworks ---
+react
+react-dom
+vue
+svelte
+preact
+solid-js
+@angular/core
+
+# --- meta-frameworks ---
+next
+nuxt
+@remix-run/react
+astro
+gatsby
+
+# --- server frameworks ---
+express
+koa
+fastify
+@nestjs/core
+@hapi/hapi
+socket.io
+
+# --- build and compile ---
+webpack
+vite
+rollup
+esbuild
+parcel
+@babel/core
+typescript
+tsup
+
+# --- test ---
+jest
+mocha
+vitest
+@playwright/test
+cypress
+ava
+supertest
+
+# --- lint and format ---
+eslint
+prettier
+stylelint
+
+# --- data access ---
+mongoose
+sequelize
+prisma
+knex
+typeorm
+pg
+mysql2
+redis
+
+# --- api and transport ---
+axios
+graphql
+apollo-server
+@apollo/client
+node-fetch
+got
+ws
+
+# --- state and routing ---
+redux
+@reduxjs/toolkit
+react-router
+zustand
+rxjs
+
+# --- styling ---
+tailwindcss
+styled-components
+sass
+postcss
+@mui/material
+
+# --- cli and runtime tooling ---
+commander
+yargs
+inquirer
+chalk
+dotenv
+nodemon
+pm2
+ts-node
+esbuild-register
+
+# --- logging and observability ---
+winston
+pino
+debug
+
+# --- common utility ---
+lodash
+dayjs
+moment
+zod
+uuid
+semver
