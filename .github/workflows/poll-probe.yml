@@ -41,7 +41,7 @@ jobs:
           set +e
           python scripts/poll_probe.py \
             --per-level "${{ inputs.per_level }}" \
-            --workers "${{ inputs.workers }}" \
+            --rates "${{ inputs.rates }}" \
             --json-out probe.json
           rc=$?
           set -e
@@ -71,6 +71,11 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          if [ ! -f probe.json ]; then
+            echo '## Poll probe' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The probe produced no output. See the step log above for why.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo '## Poll probe'
             echo '```'
