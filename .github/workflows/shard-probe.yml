@@ -5,22 +5,27 @@
 # fallback is to cut the frame by rank, but that rule assumed the constraint was
 # a rate. It is a PER-IP rate, and GitHub gives each matrix job its own runner.
 #
-# If runners have distinct egress IPs, N shards each poll 1/N of the frame at
-# 0.5 req/s concurrently and the whole frame fits with capture intact. If GitHub
-# places them behind shared NAT, the shards share one bucket, the aggregate looks
-# exactly like one runner pushed to N x 0.5 req/s, and the idea is dead.
+# ANSWERED, 2026-08-29: yes. Four shards drew four distinct Azure egress IPs
+# (20.109.36.226, 134.33.70.240, 52.161.59.144, 4.246.135.160) and each behaved
+# exactly like a lone runner at the same target — 31% refused and 0.69-0.70 req/s
+# achieved per shard, against 27% and 0.73 req/s for one runner by itself. Shards
+# do not share a bucket; that run was simply targeting 1 req/s when the per-IP
+# ceiling is nearer 0.5.
 #
-# Each shard reports its egress IP, which settles it directly rather than by
-# inference from the refusal rates. Four shards at 1 req/s each is an aggregate
-# of 4 req/s — a rate one runner was measured refusing 77% of.
+# So aggregate throughput scales with shard count, and eight shards at the
+# sustainable 0.5 req/s give 4 req/s and about 4.2 h for the whole frame. §10's
+# rank reduction is not required.
+#
+# Each shard reports its egress IP, which settles the shared-bucket question
+# directly rather than by inference from refusal rates.
 name: shard-probe
 
 on:
   workflow_dispatch:
     inputs:
-      shards:
-        description: Number of parallel shards
-        default: "4"
+      shard_list:
+        description: JSON list of shard indices, e.g. [0,1,2,3,4,5,6,7]
+        default: "[0,1,2,3,4,5,6,7]"
       rate:
         description: Target requests/second per shard
         default: "1"
@@ -35,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: ${{ fromJSON(inputs.shard_list) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +61,7 @@ jobs:
           python scripts/poll_probe.py \
             --per-level "${{ inputs.per_level }}" \
             --rates "${{ inputs.rate }}" \
-            --shards "${{ inputs.shards }}" \
+            --shards "${{ strategy.job-total }}" \
             --shard "${{ matrix.shard }}" \
             --json-out "shard-${{ matrix.shard }}.json"
           rc=$?
@@ -125,11 +130,36 @@ jobs:
                 '%s-package frame with the 1.5x margin.'
                 % (agg, len(rows), hours, format(frame, ',')))
           print()
+          # Whether the limits are INDEPENDENT is not the same question as whether
+          # the chosen rate was sustainable, and an earlier version of this script
+          # conflated them: it saw 31% aggregate refusals and concluded parallel
+          # runners buy nothing, when in fact every shard was independently sitting
+          # at its own ceiling because the target was set above it.
+          #
+          # The discriminator is whether a shard behaves like a lone runner at the
+          # same target rate. If it does, the buckets are separate and aggregate
+          # throughput scales with shard count. If the shards were sharing one
+          # bucket, each would be refused far harder than a lone runner is.
+          spread = max(l['refusal_share'] for l in lv) - min(l['refusal_share'] for l in lv)
+          per_shard = agg / len(lv)
+          scaled = agg / max(max(l['achieved_rate'] for l in lv), 1e-9)
+          print('Per-shard achieved rates are within %.1f points of each other, and '
+                'aggregate throughput is %.1fx the best single shard.'
+                % (spread * 100, scaled))
+          print()
           if share <= 0.01:
-              print('**Shards have independent rate limits.** Sharding preserves the '
-                    'full frame; §10 rank reduction is not required.')
+              print('**Independent rate limits, and this rate is sustainable.** '
+                    '%d shards at %.2f req/s each carry the frame in %.2f h. '
+                    '§10 rank reduction is not required.' % (len(lv), per_shard, hours))
+          elif scaled >= len(lv) * 0.8:
+              print('**Independent rate limits, but this target is above the per-IP '
+                    'ceiling** (%.0f%% refused). Throughput still scaled %.1fx across '
+                    '%d shards, so sharding works — re-run at a lower per-shard rate '
+                    'to find the clean configuration. Do NOT cut the frame on this.'
+                    % (share * 100, scaled, len(lv)))
           else:
-              print('**Shards share a rate limit** (%.0f%% refused in aggregate). '
-                    'Parallel runners do not buy throughput and §10 rank reduction '
-                    'stands as the fallback.' % (share * 100))
+              print('**Shards appear to share a rate limit**: aggregate throughput '
+                    'scaled only %.1fx across %d shards. Parallel runners do not buy '
+                    'throughput and §10 rank reduction stands as the fallback.'
+                    % (scaled, len(lv)))
           PY
