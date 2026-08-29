@@ -1,40 +1,35 @@
-"""Establish the weekly poll rate and the register's real storage cost, on clean
-infrastructure.
+"""Establish the SUSTAINABLE poll rate on clean infrastructure.
 
-These are the two open risks before the freeze. §10 records the first and leaves
-it explicitly unresolved. The second is not recorded as a risk at all, which is
-why it is measured here: §10.4's storage plan rests on a 30-package sample giving
-2.2 KB and 103 versions per package, and if that figure is low the "gzipped files
-in git" verdict changes.
+This is the measurement PREREGISTRATION.md §10 leaves open and the only thing
+blocking the frame freeze.
 
-WHY THIS CANNOT RUN LOCALLY. The clean local figure — 0.85 s/package, zero 429s —
-was taken before this project had made heavy use of the API. After sustained
-querying the same machine measured 0.77-1.06 packages/second with 643-931 429s in
-a single 400-package sample. That is a measurement of the penalty box, not of
-npm, and neither figure transfers to a runner with a different IP.
+WHAT THE FIRST VERSION OF THIS SCRIPT GOT WRONG. It swept worker counts with no
+pacing and no backoff, and reported seconds-per-package. On a GitHub Actions
+runner that produced 1,559 `HTTP 429`s out of 1,600 requests and apparent rates
+of 0.002 s/package — which is the speed of being refused, not the speed of
+collecting. An unpaced probe measures time-to-throttle. The collector does not
+want to know that; it wants to know the highest request rate npm will serve
+indefinitely.
 
-WHAT IT MEASURES
+So this sweeps TARGET REQUEST RATES, not concurrency. Each level paces requests
+to a fixed requests-per-second, honours `Retry-After`, and is judged on the
+share of requests that came back 429. The sustainable rate is the highest target
+whose refusal share stays under REFUSAL_CEILING. That number, multiplied by the
+frame size, is the only honest answer to "does the weekly poll fit".
 
-1. Concurrency. The poll's cost is dominated by concurrency, not by npm's rate:
-   a single request takes ~1.6 s, so 40,000 of them are ~18 core-hours and the
-   only question is how many can run at once before npm starts returning 429.
-   A probe that tests one worker count answers the wrong question. This sweeps
-   several and reports the highest that stays clean, because that — not a
-   s/package figure — is the number the collector needs.
+WHAT RUNNING IT REVEALED, AND WHY IT MATTERS. GitHub Actions runner IPs are
+shared across GitHub's CI fleet, and npm appears to rate-limit them far harder
+than an ordinary residential address: at two concurrent workers the runner was
+refused 359 times in 400 requests, while this project's own supposedly throttled
+home IP served 8 concurrent workers cleanly the same day. §10 assumed the runner
+would be the clean environment and the local machine the contaminated one. That
+assumption is inverted, and the collector's deployment target is an open question
+rather than a settled one.
 
-2. Response size. Sampled across the rank order and reported as a distribution,
-   since the mean is dragged by a long tail: rank-1 packages carry hundreds of
-   published versions, rank-39,000 ones carry a handful.
-
-Each concurrency level draws a DISJOINT slice of the frame, so a later level
-cannot be flattered by npm's cache warmed by an earlier one. Every slice is
-strided across the whole rank order rather than taken from the head.
-
-Output feeds scripts/prefreeze_report.py:
-
-    HALFLIFE_POLL_PROVEN_SECONDS=<s per pkg> python scripts/prefreeze_report.py
+Never reports a throttled level as clean. A refused request is not a fast
+request, and a probe that cannot tell them apart is worse than no probe.
 """
-import argparse, json, os, statistics, sys, threading, time
+import argparse, json, math, os, statistics, sys, threading, time
 import urllib.request, urllib.parse, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
@@ -43,48 +38,63 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RANKED = os.path.join(ROOT, 'frame', 'frame_ranked.json')
 ENDPOINT = 'https://api.npmjs.org/versions/%s/last-week'
 
-CEILING_H = 6.0         # GitHub Actions job ceiling
-TARGET_H = 5.0          # what the poll must fit inside, leaving an hour to commit
+CEILING_H = 6.0             # GitHub Actions job ceiling
+TARGET_H = 5.0              # the poll must fit inside this, leaving an hour
+REFUSAL_CEILING = 0.01      # a level is sustainable at <=1% 429s
+COOLDOWN_S = 20.0           # between levels, so one level's burst does not
+                            # contaminate the next one's verdict
 
-# A probe of a few hundred packages does not run long enough to provoke the
-# throttling a four-hour poll will. The projection is inflated by this factor so
-# the freeze is decided on a pessimistic number. §10 requires the frame to be cut
-# by rank BEFORE the first snapshot, and that decision cannot be revisited later
-# without throwing away the pre-period it was meant to protect.
+# A probe runs for minutes; the poll runs for hours. A rate limit that tolerates
+# the first can still bite during the second, so the projection carries a margin.
 THROTTLE_MARGIN = 1.5
 
-# §10.4's storage plan, for comparison against what is actually measured.
-PREREG_KB_PER_PKG = 2.2
-PREREG_VERSIONS = 103
-PREREG_GZ_GB_YEAR = 0.25
-GZIP_RATIO = 0.18       # gzipped NDJSON of this shape, measured on the sample
+
+class Pacer:
+    """Token bucket. Releases at most `rate` requests per second, globally."""
+
+    def __init__(self, rate):
+        self.interval = 1.0 / rate
+        self.lock = threading.Lock()
+        self.next_at = time.time()
+
+    def wait(self):
+        with self.lock:
+            slot = max(time.time(), self.next_at)
+            self.next_at = slot + self.interval
+        delay = slot - time.time()
+        if delay > 0:
+            time.sleep(delay)
 
 
 class Level:
-    """One concurrency level's result."""
-
-    def __init__(self, workers):
-        self.workers = workers
+    def __init__(self, rate):
+        self.rate = rate
         self.lock = threading.Lock()
-        self.latencies = []
-        self.sizes = []
-        self.versions = []
-        self.ok = 0
-        self.http429 = 0
-        self.http404 = 0
-        self.errors = 0
+        self.latencies, self.sizes, self.versions = [], [], []
+        self.ok = self.http429 = self.http404 = self.errors = 0
+        self.retry_after = []
         self.elapsed = 0.0
 
     @property
-    def per_pkg(self):
-        return self.elapsed / max(self.ok + self.http404 + self.errors + self.http429, 1)
+    def attempted(self):
+        return self.ok + self.http429 + self.http404 + self.errors
 
     @property
-    def clean(self):
-        return self.http429 == 0
+    def refusal_share(self):
+        return self.http429 / max(self.attempted, 1)
+
+    @property
+    def achieved_rate(self):
+        """Successful responses per second — the only rate that collects data."""
+        return self.ok / self.elapsed if self.elapsed else 0.0
+
+    @property
+    def sustainable(self):
+        return self.refusal_share <= REFUSAL_CEILING and self.ok > 0
 
 
-def fetch(pkg, lv):
+def fetch(pkg, lv, pacer):
+    pacer.wait()
     url = ENDPOINT % urllib.parse.quote(pkg, safe='@')
     t0 = time.time()
     try:
@@ -92,8 +102,7 @@ def fetch(pkg, lv):
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read()
         dt = time.time() - t0
-        body = json.loads(raw.decode('utf-8'))
-        nver = len(body.get('downloads') or {})
+        nver = len(json.loads(raw.decode('utf-8')).get('downloads') or {})
         with lv.lock:
             lv.ok += 1
             lv.latencies.append(dt)
@@ -103,6 +112,9 @@ def fetch(pkg, lv):
         with lv.lock:
             if e.code == 429:
                 lv.http429 += 1
+                ra = e.headers.get('Retry-After')
+                if ra:
+                    lv.retry_after.append(ra)
             elif e.code == 404:
                 lv.http404 += 1
             else:
@@ -112,11 +124,15 @@ def fetch(pkg, lv):
             lv.errors += 1
 
 
-def run_level(workers, sample):
-    lv = Level(workers)
+def run_level(rate, sample):
+    lv = Level(rate)
+    pacer = Pacer(rate)
+    # Enough workers to actually sustain the target rate at ~0.3-1.6 s latency,
+    # but never so many that the pacer stops being the binding constraint.
+    workers = max(2, min(16, int(math.ceil(rate * 2.0))))
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(lambda p: fetch(p, lv), sample))
+        list(pool.map(lambda p: fetch(p, lv, pacer), sample))
     lv.elapsed = time.time() - t0
     return lv
 
@@ -130,155 +146,149 @@ def pct(xs, p):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--per-level', type=int, default=400,
-                    help='packages sampled at each concurrency level')
-    ap.add_argument('--workers', default='2,4,8,16',
-                    help='comma-separated concurrency levels to sweep')
+    ap.add_argument('--per-level', type=int, default=150,
+                    help='requests at each target rate')
+    ap.add_argument('--rates', default='1,2,4,8',
+                    help='comma-separated target requests/second to sweep')
     ap.add_argument('--json-out', default='')
     args = ap.parse_args()
 
-    levels = [int(w) for w in args.workers.split(',') if w.strip()]
-    frame = json.load(open(RANKED, encoding='utf-8'))
-    packages = frame['packages']
+    rates = [float(r) for r in args.rates.split(',') if r.strip()]
+    packages = json.load(open(RANKED, encoding='utf-8'))['packages']
     N = len(packages)
 
-    need = args.per_level * len(levels)
+    need = args.per_level * len(rates)
     if need > N:
-        print('REFUSING: %d levels x %d packages exceeds the %s-package frame.'
-              % (len(levels), args.per_level, '{:,}'.format(N)))
+        print('REFUSING: %d rates x %d requests exceeds the %s-package frame.'
+              % (len(rates), args.per_level, '{:,}'.format(N)))
         return 2
 
-    # Disjoint, each strided across the whole rank order: level k takes every
-    # (need)th package starting at offset k*per_level... equivalently, interleave.
+    # Disjoint slices, each strided across the whole rank order so no level is
+    # flattered by npm's cache or by drawing only small packages.
     stride = N / need
     allidx = [int(i * stride) for i in range(need)]
-    slices = [allidx[k::len(levels)][:args.per_level] for k in range(len(levels))]
+    slices = [allidx[k::len(rates)][:args.per_level] for k in range(len(rates))]
 
-    print('HALFLIFE — POLL PROBE')
-    print('=' * 68)
-    print('frame          : %s packages' % '{:,}'.format(N))
-    print('sweep          : %s workers, %d packages each (disjoint, rank-strided)'
-          % (levels, args.per_level))
+    print('HALFLIFE — SUSTAINABLE POLL RATE PROBE')
+    print('=' * 72)
+    print('frame        : %s packages' % '{:,}'.format(N))
+    print('sweep        : %s req/s, %d requests each (disjoint, rank-strided)'
+          % (rates, args.per_level))
+    print('sustainable  : <= %.0f%% refused' % (REFUSAL_CEILING * 100))
     print()
 
     results = []
-    for workers, idxs in zip(levels, slices):
-        sample = [packages[i] for i in idxs]
-        print('  probing %2d workers ...' % workers, end='', flush=True)
-        lv = run_level(workers, sample)
+    for i, (rate, idxs) in enumerate(zip(rates, slices)):
+        if i:
+            time.sleep(COOLDOWN_S)
+        print('  %5.1f req/s ...' % rate, end='', flush=True)
+        lv = run_level(rate, [packages[j] for j in idxs])
         results.append(lv)
-        proj_h = lv.per_pkg * N * THROTTLE_MARGIN / 3600
-        print('  %.4f s/pkg   429=%-4d err=%-3d   -> %.2f h full frame'
-              % (lv.per_pkg, lv.http429, lv.errors, proj_h), flush=True)
+        print('  ok=%-4d 429=%-4d (%3.0f%% refused)  achieved %.2f req/s  %s'
+              % (lv.ok, lv.http429, lv.refusal_share * 100, lv.achieved_rate,
+                 'sustainable' if lv.sustainable else 'THROTTLED'), flush=True)
 
     print()
-    print('CONCURRENCY')
-    print('  %-8s %-11s %-7s %-6s %-6s %-11s %s'
-          % ('workers', 's/pkg', '429', 'err', '404', 'proj (h)', 'verdict'))
+    print('RATE SWEEP')
+    print('  %-9s %-7s %-7s %-10s %-14s %-11s %s'
+          % ('target', 'ok', '429', 'refused', 'achieved r/s', 'proj (h)', 'verdict'))
     for lv in results:
-        proj_h = lv.per_pkg * N * THROTTLE_MARGIN / 3600
-        if not lv.clean:
-            verdict = 'THROTTLED'
-        elif proj_h < TARGET_H:
-            verdict = 'FITS'
-        else:
-            verdict = 'too slow'
-        print('  %-8d %-11.4f %-7d %-6d %-6d %-11.2f %s'
-              % (lv.workers, lv.per_pkg, lv.http429, lv.errors, lv.http404, proj_h, verdict))
+        proj = (N / lv.achieved_rate * THROTTLE_MARGIN / 3600) if lv.achieved_rate else None
+        print('  %-9.1f %-7d %-7d %-10s %-14.2f %-11s %s'
+              % (lv.rate, lv.ok, lv.http429, '%.0f%%' % (lv.refusal_share * 100),
+                 lv.achieved_rate, ('%.2f' % proj) if proj else 'n/a',
+                 'sustainable' if lv.sustainable else 'THROTTLED'))
 
-    usable = [lv for lv in results if lv.clean and lv.per_pkg * N * THROTTLE_MARGIN / 3600 < TARGET_H]
-    best = min(usable, key=lambda lv: lv.per_pkg) if usable else None
+    good = [lv for lv in results if lv.sustainable]
+    best = max(good, key=lambda lv: lv.achieved_rate) if good else None
+    fits = bool(best) and (N / best.achieved_rate * THROTTLE_MARGIN / 3600) < TARGET_H
 
-    # Response size — pooled across every level, since it does not depend on
-    # concurrency. Reported as a distribution: the mean is dragged by the head of
-    # the rank order and on its own would misstate the storage cost.
+    ra = [r for lv in results for r in lv.retry_after]
+    if ra:
+        print()
+        print('  npm sent Retry-After on %d refusals; distinct values: %s'
+              % (len(ra), sorted(set(ra))[:5]))
+
     sizes = [s for lv in results for s in lv.sizes]
     versions = [v for lv in results for v in lv.versions]
-    mean_kb = statistics.mean(sizes) / 1024 if sizes else 0
-    raw_wk_mb = mean_kb * N / 1024
-    gz_gb_yr = raw_wk_mb * 52 * GZIP_RATIO / 1024
-
     print()
-    print('RESPONSE SIZE  (n=%s, pooled)' % '{:,}'.format(len(sizes)))
-    print('  bytes p50/p90/p99 : %s / %s / %s'
-          % ('{:,}'.format(pct(sizes, .50)), '{:,}'.format(pct(sizes, .90)),
-             '{:,}'.format(pct(sizes, .99))))
-    print('  mean              : %.1f KB, %.0f versions   (§10.4 assumed %.1f KB, %d versions)'
-          % (mean_kb, statistics.mean(versions) if versions else 0,
-             PREREG_KB_PER_PKG, PREREG_VERSIONS))
-    print()
-    print('STORAGE PROJECTION  (PREREGISTRATION.md §10.4)')
-    print('  raw per week      : %.0f MB      (§10.4 says 27 MB)' % raw_wk_mb)
-    print('  gzipped per year  : %.2f GB     (§10.4 says %.2f GB)' % (gz_gb_yr, PREREG_GZ_GB_YEAR))
-    storage_ok = gz_gb_yr <= PREREG_GZ_GB_YEAR * 1.5
-    if not storage_ok:
-        print('  §10.4 UNDERSTATES STORAGE by %.1fx. Its "gzipped files in git: Fits"'
-              % (gz_gb_yr / PREREG_GZ_GB_YEAR))
-        print('  verdict was reached on a 30-package sample. GitHub warns above 1 GB')
-        print('  and soft-limits around 5 GB, and gzipped blobs do not delta-compress,')
-        print('  so year-two is the same cost again. The compaction plan §10 defers')
-        print('  is load-bearing sooner than §10.4 implies and must be amended before')
-        print('  the freeze, not after.')
+    if sizes:
+        mean_kb = statistics.mean(sizes) / 1024
+        raw_wk_mb = mean_kb * N / 1024
+        gz_gb_yr = raw_wk_mb * 52 * 0.18 / 1024
+        print('RESPONSE SIZE  (n=%s successful)' % '{:,}'.format(len(sizes)))
+        print('  bytes p50/p90/p99 : %s / %s / %s'
+              % ('{:,}'.format(pct(sizes, .50)), '{:,}'.format(pct(sizes, .90)),
+                 '{:,}'.format(pct(sizes, .99))))
+        print('  mean              : %.1f KB, %.0f versions   (§10.4 measured 2.2 KB, 103)'
+              % (mean_kb, statistics.mean(versions)))
+        print('  -> %.0f MB/week raw, %.2f GB/year gzipped' % (raw_wk_mb, gz_gb_yr))
     else:
-        print('  §10.4 storage plan holds.')
+        mean_kb = raw_wk_mb = gz_gb_yr = 0.0
+        print('RESPONSE SIZE  : no successful responses — nothing measured.')
 
     print()
-    print('=' * 68)
+    print('=' * 72)
     if best is None:
-        print('VERDICT: no probed concurrency fits the %s-package frame.' % '{:,}'.format(N))
-        clean = [lv for lv in results if lv.clean]
-        rate = min(clean, key=lambda lv: lv.per_pkg).per_pkg if clean else results[0].per_pkg
+        print('VERDICT: NO sustainable rate found. Every probed level was throttled.')
         print()
-        print('§10 requires reduction by RANK, before the first snapshot, never by')
-        print('dropping individual packages. At the best clean rate (%.4f s/pkg):' % rate)
-        for size, capture in ((30000, 65.2), (20000, 49.6), (12000, 46.4), (5000, 35.1)):
-            h = rate * size * THROTTLE_MARGIN / 3600
-            print('  %s  top %-7s %.2f h   %.1f%% advisory capture'
-                  % ('FITS' if h < TARGET_H else 'no  ', '{:,}'.format(size), h, capture))
+        print('This is not a frame-size problem, and reducing the frame does not fix')
+        print('it: at this refusal share the poll cannot complete at any size. The')
+        print('collector needs somewhere npm will serve it, which is a deployment')
+        print('question rather than a §10 rank-reduction one. Do not cut the frame')
+        print('on this result.')
     else:
-        print('VERDICT: the %s-package frame fits at %d workers.'
-              % ('{:,}'.format(N), best.workers))
-        print('  %.4f s/pkg -> %.2f h with the %.1fx margin (target %.0f h, ceiling %.0f h)'
-              % (best.per_pkg, best.per_pkg * N * THROTTLE_MARGIN / 3600,
-                 THROTTLE_MARGIN, TARGET_H, CEILING_H))
-        print()
-        print('Next:')
-        print('  HALFLIFE_POLL_PROVEN_SECONDS=%.4f python scripts/prefreeze_report.py'
-              % best.per_pkg)
-        print('  and set --workers %d in .github/workflows/collect.yml' % best.workers)
-    print('=' * 68)
+        proj_h = N / best.achieved_rate * THROTTLE_MARGIN / 3600
+        print('VERDICT: sustainable at %.1f req/s target (%.2f req/s achieved).'
+              % (best.rate, best.achieved_rate))
+        print('  full frame: %.2f h with the %.1fx margin (target %.0f h, ceiling %.0f h) — %s'
+              % (proj_h, THROTTLE_MARGIN, TARGET_H, CEILING_H, 'FITS' if fits else 'DOES NOT FIT'))
+        if fits:
+            print()
+            print('Next:')
+            print('  HALFLIFE_POLL_PROVEN_SECONDS=%.4f python scripts/prefreeze_report.py'
+                  % (1.0 / best.achieved_rate))
+        else:
+            print()
+            print('§10 requires reduction by RANK, before the first snapshot:')
+            for size, capture in ((30000, 65.2), (20000, 49.6), (12000, 46.4), (5000, 35.1)):
+                h = size / best.achieved_rate * THROTTLE_MARGIN / 3600
+                print('  %s  top %-7s %.2f h   %.1f%% advisory capture'
+                      % ('FITS' if h < TARGET_H else 'no  ', '{:,}'.format(size), h, capture))
+    print('=' * 72)
 
     if args.json_out:
         json.dump({
             'frame_size': N,
             'per_level': args.per_level,
+            'refusal_ceiling': REFUSAL_CEILING,
             'throttle_margin': THROTTLE_MARGIN,
             'target_hours': TARGET_H,
             'levels': [{
-                'workers': lv.workers,
-                'seconds_per_package': round(lv.per_pkg, 5),
-                'elapsed_seconds': round(lv.elapsed, 2),
+                'target_rate': lv.rate,
                 'ok': lv.ok, 'http_429': lv.http429, 'http_404': lv.http404,
                 'errors': lv.errors,
+                'refusal_share': round(lv.refusal_share, 4),
+                'achieved_rate': round(lv.achieved_rate, 3),
+                'elapsed_seconds': round(lv.elapsed, 2),
                 'latency_p50': round(pct(lv.latencies, .50), 3),
-                'latency_p95': round(pct(lv.latencies, .95), 3),
-                'projected_hours': round(lv.per_pkg * N * THROTTLE_MARGIN / 3600, 3),
-                'clean': lv.clean,
+                'sustainable': lv.sustainable,
             } for lv in results],
-            'best_workers': best.workers if best else None,
-            'seconds_per_package': round(best.per_pkg, 5) if best else None,
-            'fits': best is not None,
+            'sustainable_rate': round(best.achieved_rate, 3) if best else None,
+            'seconds_per_package': round(1.0 / best.achieved_rate, 5) if best else None,
+            'projected_hours': round(N / best.achieved_rate * THROTTLE_MARGIN / 3600, 3) if best else None,
+            'fits': fits,
+            'total_ok': sum(lv.ok for lv in results),
+            'total_429': sum(lv.http429 for lv in results),
+            'retry_after_values': sorted(set(ra))[:10],
             'response_bytes_mean': round(statistics.mean(sizes), 1) if sizes else 0,
-            'response_bytes_p50': pct(sizes, .50),
-            'response_bytes_p99': pct(sizes, .99),
             'versions_mean': round(statistics.mean(versions), 1) if versions else 0,
             'raw_mb_per_week': round(raw_wk_mb, 1),
             'gz_gb_per_year': round(gz_gb_yr, 3),
-            'storage_matches_prereg': storage_ok,
         }, open(args.json_out, 'w', encoding='utf-8', newline='\n'), indent=1)
         print('\nwrote %s' % args.json_out)
 
-    return 0 if best else 1
+    return 0 if fits else 1
 
 
 if __name__ == '__main__':

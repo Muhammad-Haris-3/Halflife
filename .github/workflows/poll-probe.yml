@@ -12,11 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       per_level:
-        description: Packages sampled at each concurrency level
-        default: "400"
-      workers:
-        description: Comma-separated concurrency levels to sweep
-        default: "2,4,8,16"
+        description: Requests at each target rate
+        default: "150"
+      rates:
+        description: Comma-separated target requests/second to sweep
+        default: "1,2,4,8"
 
 jobs:
   probe:
@@ -29,8 +29,9 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Sweep concurrency against the npm per-version endpoint
-        # Exit 0 means a concurrency fits, exit 1 means none does. Both are
+      - name: Sweep sustainable request rates against the npm per-version endpoint
+        # Exit 0 means a sustainable rate fits the frame, exit 1 means none
+        # does. Both are
         # findings and neither is a broken build, so both are tolerated — but
         # anything else is a real failure and must not be swallowed. The first
         # run of this workflow passed bad arguments and "|| true" turned that
@@ -52,14 +53,15 @@ jobs:
             echo "::error::probe produced no probe.json despite exiting $rc"
             exit 1
           fi
-          echo "probe exited $rc (0=fits, 1=no concurrency fits)"
+          echo "probe exited $rc (0=fits, 1=no sustainable rate fits the frame)"
 
       - name: Pre-freeze report at the proven rate
         run: |
           RATE=$(python -c "import json;d=json.load(open('probe.json'));print(d['seconds_per_package'] or '')")
           if [ -z "$RATE" ]; then
-            echo "No clean concurrency fit the frame — see the probe output above."
-            echo "PREREGISTRATION.md §10 requires reduction by rank before the first snapshot."
+            echo "No sustainable rate fit the frame — see the probe output above."
+            echo "If every level was throttled this is a deployment problem, not a"
+            echo "frame-size one, and PREREGISTRATION.md §10 rank reduction does not fix it."
             python scripts/prefreeze_report.py || true
           else
             echo "proven rate: $RATE s/pkg"
@@ -72,10 +74,10 @@ jobs:
           {
             echo '## Poll probe'
             echo '```'
-            python -c "import json;d=json.load(open('probe.json'));[print('%2d workers  %.4f s/pkg  429=%-5d %.2f h projected  %s' % (l['workers'],l['seconds_per_package'],l['http_429'],l['projected_hours'],'clean' if l['clean'] else 'THROTTLED')) for l in d['levels']]"
+            python -c "import json;d=json.load(open('probe.json'));[print('%5.1f req/s target  ok=%-4d 429=%-5d %3.0f%% refused  achieved %.2f req/s  %s' % (l['target_rate'],l['ok'],l['http_429'],l['refusal_share']*100,l['achieved_rate'],'sustainable' if l['sustainable'] else 'THROTTLED')) for l in d['levels']]"
             echo '```'
-            python -c "import json;d=json.load(open('probe.json'));print('**Verdict:** %s' % ('fits at %d workers (%.4f s/pkg)' % (d['best_workers'],d['seconds_per_package']) if d['fits'] else 'no probed concurrency fits the frame'))"
-            python -c "import json;d=json.load(open('probe.json'));print('**Storage:** %.0f MB/week, %.2f GB/year gzipped — §10.4 match: %s' % (d['raw_mb_per_week'],d['gz_gb_per_year'],d['storage_matches_prereg']))"
+            python -c "import json;d=json.load(open('probe.json'));print('**Verdict:** %s' % ('fits at %.2f req/s sustained, %.2f h full frame' % (d['sustainable_rate'],d['projected_hours']) if d['fits'] else ('sustainable at %.2f req/s but %.2f h exceeds the ceiling' % (d['sustainable_rate'],d['projected_hours']) if d['sustainable_rate'] else 'NO sustainable rate found — every level throttled (%d ok / %d refused)' % (d['total_ok'],d['total_429']))))"
+            python -c "import json;d=json.load(open('probe.json'));print('**Storage:** %.0f MB/week, %.2f GB/year gzipped (n=%d successful responses)' % (d['raw_mb_per_week'],d['gz_gb_per_year'],d['total_ok']))"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
