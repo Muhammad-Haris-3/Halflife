@@ -11,17 +11,17 @@ name: poll-probe
 on:
   workflow_dispatch:
     inputs:
-      sample:
-        description: Packages to sample, even stride across the rank order
-        default: "600"
+      per_level:
+        description: Packages sampled at each concurrency level
+        default: "400"
       workers:
-        description: Concurrent workers (the poll runs at this concurrency too)
-        default: "4"
+        description: Comma-separated concurrency levels to sweep
+        default: "2,4,8,16"
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -29,22 +29,57 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Probe the npm per-version endpoint
-        # Does not fail the job on a "does not fit" verdict — that is a finding
-        # to read, not a broken build. The verdict is in the log and the artifact.
+      - name: Sweep concurrency against the npm per-version endpoint
+        # Exit 0 means a concurrency fits, exit 1 means none does. Both are
+        # findings and neither is a broken build, so both are tolerated — but
+        # anything else is a real failure and must not be swallowed. The first
+        # run of this workflow passed bad arguments and "|| true" turned that
+        # into what looked like a verdict, which is the exact failure mode
+        # scripts/collect.py is written to avoid.
         run: |
+          set +e
           python scripts/poll_probe.py \
-            --sample "${{ inputs.sample }}" \
+            --per-level "${{ inputs.per_level }}" \
             --workers "${{ inputs.workers }}" \
-            --json-out probe.json || true
+            --json-out probe.json
+          rc=$?
+          set -e
+          if [ $rc -gt 1 ]; then
+            echo "::error::probe exited $rc — it did not run to a verdict"
+            exit $rc
+          fi
+          if [ ! -f probe.json ]; then
+            echo "::error::probe produced no probe.json despite exiting $rc"
+            exit 1
+          fi
+          echo "probe exited $rc (0=fits, 1=no concurrency fits)"
 
       - name: Pre-freeze report at the proven rate
         run: |
-          RATE=$(python -c "import json;print(json.load(open('probe.json'))['seconds_per_package'])")
-          echo "proven rate: $RATE s/pkg"
-          HALFLIFE_POLL_PROVEN_SECONDS="$RATE" python scripts/prefreeze_report.py || true
+          RATE=$(python -c "import json;d=json.load(open('probe.json'));print(d['seconds_per_package'] or '')")
+          if [ -z "$RATE" ]; then
+            echo "No clean concurrency fit the frame — see the probe output above."
+            echo "PREREGISTRATION.md §10 requires reduction by rank before the first snapshot."
+            python scripts/prefreeze_report.py || true
+          else
+            echo "proven rate: $RATE s/pkg"
+            HALFLIFE_POLL_PROVEN_SECONDS="$RATE" python scripts/prefreeze_report.py || true
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Poll probe'
+            echo '```'
+            python -c "import json;d=json.load(open('probe.json'));[print('%2d workers  %.4f s/pkg  429=%-5d %.2f h projected  %s' % (l['workers'],l['seconds_per_package'],l['http_429'],l['projected_hours'],'clean' if l['clean'] else 'THROTTLED')) for l in d['levels']]"
+            echo '```'
+            python -c "import json;d=json.load(open('probe.json'));print('**Verdict:** %s' % ('fits at %d workers (%.4f s/pkg)' % (d['best_workers'],d['seconds_per_package']) if d['fits'] else 'no probed concurrency fits the frame'))"
+            python -c "import json;d=json.load(open('probe.json'));print('**Storage:** %.0f MB/week, %.2f GB/year gzipped — §10.4 match: %s' % (d['raw_mb_per_week'],d['gz_gb_per_year'],d['storage_matches_prereg']))"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: poll-probe
           path: probe.json
