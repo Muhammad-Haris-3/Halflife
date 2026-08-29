@@ -62,14 +62,23 @@ anyone is told they are vulnerable.
 
 ### 2.1 The rule, fixed now
 
-The cohort is the **top 40,000 npm packages by ecosyste.ms download rank**, as
-resolved on the build date and recorded in `frame/frame_ranked.json`.
+The cohort is the **distinct npm packages among the top 40,000 rows of the
+ecosyste.ms download ranking**, as resolved on the build date and recorded in
+`frame/frame_ranked.json`.
 
 That is the entire rule. There is no download threshold applied at collection
 time, and no npm verification step.
 
-**Composition as built (2026-08-28):** 40,000 packages — 20,487 scoped, 19,513
-unscoped.
+**Composition as built (2026-08-28):** **39,998 packages** — 20,487 scoped,
+19,511 unscoped, from 40,000 ranked rows.
+
+The rule says *distinct packages among the top 40,000 rows* rather than *the top
+40,000 packages* because those are not the same thing. ecosyste.ms is paged, and
+a package whose rank drifts across the ~400 requests of a build can be returned
+on two pages; this build caught `pg-hstore` and `rehype-attr` twice. Counting
+them once is what "the top 40,000 packages" always meant, and stating the rule
+this way makes the frame's size a fact about the fetch rather than a round number
+the fetch is assumed to have delivered.
 
 **The frame is a defined set, not a claimed census.** It does not assert that it
 contains every npm package above any download level, because no such assertion
@@ -134,7 +143,7 @@ completeness was the error; the design never needed it.
 
 **What the pool does guarantee, measured:** across the 600-advisory sample, of
 279 advised packages, **every one with ≥100,000 weekly downloads is inside the
-40,000 pool**. The largest advised package outside it is 58,089 weekly.
+frame**. The largest advised package outside it is 58,089 weekly.
 
 **Why candidates rather than a census.** Scoped packages are **38.1% of the
 registry** (1,653,334 of 4,335,856, from `_all_docs` offsets) and npm's bulk
@@ -159,7 +168,7 @@ frame as actually built, not estimated:
 | top 12,000 | 12,000 | 46.4% |
 | top 20,000 | 20,000 | 49.6% |
 | top 30,000 | 30,000 | 65.2% |
-| **top 40,000 (this frame)** | **40,000** | **68.9%** |
+| **top 40,000 rows (this frame)** | **39,998** | **68.9%** |
 
 **What the missed 31.1% costs, stated exactly.** Of the advisories outside the
 frame:
@@ -372,11 +381,11 @@ written to the `runs` record rather than silently absorbed. A poll that exhausts
 its retry budget is recorded as incomplete for the packages it missed; those
 package-weeks are excluded, not interpolated.
 
-**The frame is 40,000 packages and the weekly poll cost is not yet established.**
+**The frame is 39,998 packages and the weekly poll cost is not yet established.**
 This is the one unresolved risk before freeze.
 
 The per-version endpoint accepts no bulk queries at all, scoped or unscoped, so
-the poll is 40,000 individual requests. Measured cleanly, before this project
+the poll is one individual request per frame package. Measured cleanly, before this project
 had made heavy use of the API: **0.85 s/package with zero `HTTP 429`s**, which
 implies ~9.4 hours sequentially and roughly 2.4 hours at four workers. Measured
 again after sustained querying had throttled the originating IP: **0.77–1.06
@@ -415,7 +424,7 @@ The register is **gzipped snapshot files committed to the public repository**,
 partitioned by ISO week. Not a database.
 
 Measured on 30 real frame candidates: **2.2 KB and 103 versions per package.**
-Against the 40,000-package frame of §2.1 that is **~4.1M version-rows and ~86 MB
+Against the 39,998-package frame of §2.1 that is **~4.1M version-rows and ~86 MB
 of raw JSON per week** — about 214M rows and 4.4 GB/year, or roughly **0.8 GB/year
 gzipped**.
 

@@ -105,8 +105,22 @@ def build():
               % ('{:,}'.format(len(names)), '{:,}'.format(SIZE)))
         return 1
 
-    packages = names[:SIZE]
-    inframe = set(packages)
+    # Deduplicate, keeping the first (best-ranked) occurrence. ecosyste.ms is
+    # paged, and a package whose rank drifts across the ~400 requests of a build
+    # can be returned on two pages: the 2026-08-28 fetch caught pg-hstore and
+    # rehype-attr twice. Left in, the frame claims a size it does not have, and
+    # the collector would ask npm for the same package twice every week while the
+    # register held one row for it, since resume keys on the package name.
+    #
+    # The frame is therefore the DISTINCT packages among the top SIZE rows of the
+    # ranking, which is what "the top 40,000 packages" was always meant to denote.
+    packages, seen = [], set()
+    for n in names[:SIZE]:
+        if n not in seen:
+            seen.add(n)
+            packages.append(n)
+    dupes = SIZE - len(packages)
+    inframe = seen
     scoped = sum(1 for n in packages if n.startswith('@'))
 
     cap = json.load(open(CAPTURE, encoding='utf-8'))
@@ -116,9 +130,12 @@ def build():
     missed = [p for p in advcount if p not in inframe]
 
     out = {
-        'rule': 'top-N npm packages by ecosyste.ms download rank, frozen at build date',
+        'rule': 'distinct npm packages among the top-N ecosyste.ms download-ranked '
+                'rows, frozen at build date',
         'source': 'packages.ecosyste.ms/api/v1/registries/npmjs.org/packages?sort=downloads&order=desc',
         'built': BUILT or time.strftime('%Y-%m-%d'),
+        'candidate_rows': SIZE,
+        'duplicate_rows_dropped': dupes,
         'size': len(packages),
         'scoped': scoped,
         'unscoped': len(packages) - scoped,
@@ -132,6 +149,8 @@ def build():
 
     print()
     print('FRAME')
+    print('  candidate rows    : %s, %d duplicate(s) dropped'
+          % ('{:,}'.format(SIZE), dupes))
     print('  built             : %s%s' % (out['built'],
           '' if BUILT else '  (today — set HALFLIFE_FRAME_BUILT to reproduce a prior build)'))
     print('  size              : %s  (%s scoped, %s unscoped)'

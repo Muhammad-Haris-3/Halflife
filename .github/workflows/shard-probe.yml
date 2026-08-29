@@ -1,0 +1,135 @@
+# Does sharding the poll across parallel runners buy independent rate limits?
+#
+# A single runner sustains only ~0.5 req/s against api.npmjs.org, which puts the
+# full frame at ~22 h against a 6-hour ceiling. PREREGISTRATION.md §10's stated
+# fallback is to cut the frame by rank, but that rule assumed the constraint was
+# a rate. It is a PER-IP rate, and GitHub gives each matrix job its own runner.
+#
+# If runners have distinct egress IPs, N shards each poll 1/N of the frame at
+# 0.5 req/s concurrently and the whole frame fits with capture intact. If GitHub
+# places them behind shared NAT, the shards share one bucket, the aggregate looks
+# exactly like one runner pushed to N x 0.5 req/s, and the idea is dead.
+#
+# Each shard reports its egress IP, which settles it directly rather than by
+# inference from the refusal rates. Four shards at 1 req/s each is an aggregate
+# of 4 req/s — a rate one runner was measured refusing 77% of.
+name: shard-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Number of parallel shards
+        default: "4"
+      rate:
+        description: Target requests/second per shard
+        default: "1"
+      per_level:
+        description: Requests per shard
+        default: "150"
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Egress IP
+        id: ip
+        run: |
+          IP=$(curl -s --max-time 20 https://api.ipify.org || echo unknown)
+          echo "shard ${{ matrix.shard }} egress IP: $IP"
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Probe this shard
+        run: |
+          set +e
+          python scripts/poll_probe.py \
+            --per-level "${{ inputs.per_level }}" \
+            --rates "${{ inputs.rate }}" \
+            --shards "${{ inputs.shards }}" \
+            --shard "${{ matrix.shard }}" \
+            --json-out "shard-${{ matrix.shard }}.json"
+          rc=$?
+          set -e
+          if [ $rc -gt 1 ]; then
+            echo "::error::shard ${{ matrix.shard }} exited $rc — it did not run to a verdict"
+            exit $rc
+          fi
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          d = json.load(open('shard-%s.json' % os.environ['SHARD']))
+          l = d['levels'][0]
+          print('| %s | `%s` | %d | %d | %.0f%% | %.2f |' % (
+              os.environ['SHARD'], os.environ['IP'], l['ok'], l['http_429'],
+              l['refusal_share'] * 100, l['achieved_rate']))
+          PY
+        env:
+          SHARD: ${{ matrix.shard }}
+          IP: ${{ steps.ip.outputs.ip }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+
+  verdict:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          merge-multiple: true
+      - name: Decide
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json
+          rows = [json.load(open(f)) for f in sorted(glob.glob('shard-*.json'))]
+          if not rows:
+              print('## Shard probe\n\nNo shard produced output.')
+              raise SystemExit(0)
+          lv = [r['levels'][0] for r in rows]
+          ok = sum(l['ok'] for l in lv)
+          ref = sum(l['http_429'] for l in lv)
+          share = ref / max(ok + ref, 1)
+          agg = sum(l['achieved_rate'] for l in lv)
+          frame = rows[0]['full_frame_size']
+          print('## Shard probe verdict')
+          print()
+          print('| shard | ok | 429 | refused | achieved r/s |')
+          print('|---|---|---|---|---|')
+          for r, l in zip(rows, lv):
+              print('| %d | %d | %d | %.0f%% | %.2f |'
+                    % (r['shard'], l['ok'], l['http_429'], l['refusal_share'] * 100,
+                       l['achieved_rate']))
+          print('| **all** | **%d** | **%d** | **%.0f%%** | **%.2f** |'
+                % (ok, ref, share * 100, agg))
+          print()
+          hours = frame / agg * 1.5 / 3600 if agg else float('inf')
+          print('Aggregate %.2f req/s across %d shards -> **%.2f h** for the '
+                '%s-package frame with the 1.5x margin.'
+                % (agg, len(rows), hours, format(frame, ',')))
+          print()
+          if share <= 0.01:
+              print('**Shards have independent rate limits.** Sharding preserves the '
+                    'full frame; §10 rank reduction is not required.')
+          else:
+              print('**Shards share a rate limit** (%.0f%% refused in aggregate). '
+                    'Parallel runners do not buy throughput and §10 rank reduction '
+                    'stands as the fallback.' % (share * 100))
+          PY

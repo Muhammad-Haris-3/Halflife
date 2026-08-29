@@ -151,10 +151,20 @@ def main():
     ap.add_argument('--rates', default='1,2,4,8',
                     help='comma-separated target requests/second to sweep')
     ap.add_argument('--json-out', default='')
+    ap.add_argument('--shards', type=int, default=1,
+                    help='split the frame across N runners (see --shard)')
+    ap.add_argument('--shard', type=int, default=0,
+                    help='which shard this process probes, 0-indexed')
     args = ap.parse_args()
 
     rates = [float(r) for r in args.rates.split(',') if r.strip()]
     packages = json.load(open(RANKED, encoding='utf-8'))['packages']
+    FRAME_N = len(packages)
+    if args.shards > 1:
+        # Rank-strided so every shard spans the whole frame rather than owning a
+        # contiguous popularity band: shards must be comparable to each other, and
+        # a shard of only head packages would carry far more versions per request.
+        packages = packages[args.shard::args.shards]
     N = len(packages)
 
     need = args.per_level * len(rates)
@@ -171,6 +181,9 @@ def main():
 
     print('HALFLIFE — SUSTAINABLE POLL RATE PROBE')
     print('=' * 72)
+    if args.shards > 1:
+        print('shard        : %d of %d — %s of %s frame packages'
+              % (args.shard, args.shards, '{:,}'.format(N), '{:,}'.format(FRAME_N)))
     print('frame        : %s packages' % '{:,}'.format(N))
     print('sweep        : %s req/s, %d requests each (disjoint, rank-strided)'
           % (rates, args.per_level))
@@ -260,6 +273,9 @@ def main():
     if args.json_out:
         json.dump({
             'frame_size': N,
+            'full_frame_size': FRAME_N,
+            'shard': args.shard,
+            'shards': args.shards,
             'per_level': args.per_level,
             'refusal_ceiling': REFUSAL_CEILING,
             'throttle_margin': THROTTLE_MARGIN,
