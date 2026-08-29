@@ -201,7 +201,7 @@ def main():
     stats, budget = Stats(), Budget(args.retry_budget)
     started = time.time()
     write_lock = threading.Lock()
-    out = gzip.open(snap, 'at', encoding='utf-8') if frozen else None
+    out = gzip.open(snap, 'at', encoding='utf-8', newline='\n') if frozen else None
 
     def work(pkg):
         row, reason = fetch(pkg, stats, budget)
@@ -280,7 +280,7 @@ def main():
         if os.path.exists(runpath):
             existing = json.load(open(runpath, encoding='utf-8'))
             prior = existing if isinstance(existing, list) else [existing]
-        json.dump(prior + [run], open(runpath, 'w', encoding='utf-8'), indent=1)
+        json.dump(prior + [run], open(runpath, 'w', encoding='utf-8', newline='\n'), indent=1)
         print()
         print('wrote %s' % rel(runpath))
         print('wrote %s' % rel(snap))

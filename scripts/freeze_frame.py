@@ -92,7 +92,7 @@ def main():
         'the primary analysis regardless of popularity. See PREREGISTRATION.md §2.1.',
         '',
     ]
-    with open(MANIFEST, 'w', encoding='utf-8') as fh:
+    with open(MANIFEST, 'w', encoding='utf-8', newline='\n') as fh:
         fh.write('\n'.join(lines))
 
     print()

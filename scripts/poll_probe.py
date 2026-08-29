@@ -275,7 +275,7 @@ def main():
             'raw_mb_per_week': round(raw_wk_mb, 1),
             'gz_gb_per_year': round(gz_gb_yr, 3),
             'storage_matches_prereg': storage_ok,
-        }, open(args.json_out, 'w', encoding='utf-8'), indent=1)
+        }, open(args.json_out, 'w', encoding='utf-8', newline='\n'), indent=1)
         print('\nwrote %s' % args.json_out)
 
     return 0 if best else 1

@@ -1,0 +1,14 @@
+# No line-ending translation, anywhere, ever.
+#
+# frame/MANIFEST records the SHA-256 of frame/frame_ranked.json,
+# frame/candidates.tsv and PREREGISTRATION.md, and PREREGISTRATION.md §10.4
+# rests on the claim that "any reader can verify what was written and when,
+# independently." Git's autocrlf breaks exactly that: with core.autocrlf=true a
+# Windows checkout of frame_ranked.json hashes to 4dcca8bb... while the blob and
+# every Linux checkout hash to 4b8be7f2..., so a verifier on another platform
+# computes a different digest from the same commit and concludes the record was
+# altered.
+#
+# A hash nobody else can reproduce is not evidence. The repository is therefore
+# byte-exact on every platform: working copy == blob == what the manifest signed.
+* -text

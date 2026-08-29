@@ -203,7 +203,8 @@ def phase_assemble():
                'size': len(keep), 'scoped': scoped, 'unscoped': len(keep) - scoped,
                'margin_tail_over_threshold': over,
                'packages': sorted(keep)},
-              open(os.path.join(FRAME, 'frame_threshold.json'), 'w', encoding='utf-8'), indent=0)
+              open(os.path.join(FRAME, 'frame_threshold.json'), 'w', encoding='utf-8',
+                   newline='\n'), indent=0)
     print('\nwrote frame/frame_threshold.json')
 
 

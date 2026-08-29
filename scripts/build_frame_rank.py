@@ -75,7 +75,7 @@ def fetch_candidates():
     print('phase 1: fetching pages %d..%d of ecosyste.ms (have %s rows)'
           % (start, npages, '{:,}'.format(have)))
 
-    with open(CAND, 'a', encoding='utf-8') as out:
+    with open(CAND, 'a', encoding='utf-8', newline='\n') as out:
         for page in range(start, npages + 1):
             rows = get(API % (PER_PAGE, page))
             if not rows:
@@ -143,7 +143,7 @@ def build():
     print('  advised >=100k outside frame          : %d  (§2.2 asserts 0)'
           % out['advised_pkgs_outside_frame_over_100k'])
 
-    json.dump(out, open(RANKED, 'w', encoding='utf-8'), indent=0)
+    json.dump(out, open(RANKED, 'w', encoding='utf-8', newline='\n'), indent=0)
     print('\nwrote frame/frame_ranked.json')
     return 0
 
