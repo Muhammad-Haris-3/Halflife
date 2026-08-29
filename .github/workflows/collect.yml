@@ -1,16 +1,25 @@
 # The weekly poll.
 #
-# Two independent cron windows rather than one, per PREREGISTRATION.md §10.
-# GitHub's scheduler drops windows outright. With a single weekly entry a dropped
-# window costs a full week of the pre-period for every package in the frame, and
-# unlike an hourly feed there is no way to recover it — npm keeps seven days and
-# archives nothing. The second window is a retry of the first: the collector
-# resumes into the same ISO-week partition and skips whatever the first window
-# already captured, so a successful Monday makes Wednesday nearly free.
+# Sharded across parallel runners because npm's rate limit on the per-version
+# endpoint is PER EGRESS IP, measured 2026-08-29: one runner sustains 0.5 req/s
+# with zero refusals and is refused 27% of the time at 1 req/s, while eight
+# runners on distinct IPs sustained 4.02 req/s between them with zero refusals
+# across 1,200 requests. Concurrency inside one job buys nothing; more IPs buy
+# everything. At 4 req/s the 39,998-package frame takes about 2.8 h, or 4.14 h
+# carrying the 1.5x margin, inside the 6-hour job ceiling.
 #
-# The collector refuses to write anything until frame/MANIFEST exists. That is
-# deliberate: a snapshot taken before the freeze commit would make the frame a
-# description of what was seen rather than a rule fixed in advance.
+# This is why PREREGISTRATION.md §10's rank-reduction fallback is not needed and
+# advisory capture stays at 68.9%.
+#
+# Two cron windows rather than one, per §10. GitHub's scheduler drops windows
+# outright, and with a single weekly entry a dropped window costs a full week of
+# the pre-period for every package in the frame — npm keeps seven days and
+# archives nothing, so there is no recovering it later. The second window resumes
+# into the same ISO-week partition and skips whatever the first captured.
+#
+# Nothing is written until frame/MANIFEST exists. A snapshot taken before the
+# freeze commit would make the frame a description of what was seen rather than a
+# rule fixed in advance.
 name: collect
 
 on:
@@ -19,46 +28,94 @@ on:
     - cron: "0 6 * * 3"     # Wednesday 06:00 UTC — recovery window
   workflow_dispatch:
     inputs:
-      workers:
-        description: Concurrent workers
-        default: "4"
+      rate:
+        description: Requests/second per shard (measured per-IP ceiling is 0.5)
+        default: "0.5"
 
 concurrency:
-  # Never two polls at once: they would race on the same snapshot file and
-  # double-count packages in the register.
   group: halflife-collect
   cancel-in-progress: false
 
 permissions:
   contents: write
 
+env:
+  SHARDS: "8"
+
 jobs:
-  poll:
+  guard:
     runs-on: ubuntu-latest
-    timeout-minutes: 350        # inside the 6 h ceiling, with room to commit
     steps:
       - uses: actions/checkout@v4
+      - name: Refuse to collect against an unfrozen frame
+        run: |
+          if [ ! -f frame/MANIFEST ]; then
+            echo "::error::frame/MANIFEST does not exist — the frame is not frozen."
+            echo "The first snapshot must not precede the freeze commit. See PREREGISTRATION.md §2.1."
+            exit 1
+          fi
+          echo "frame is frozen; collection may proceed"
 
+  poll:
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 330        # a shard is ~2.8 h at 0.5 req/s; ceiling is 6 h
+    strategy:
+      fail-fast: false          # one lost shard is a recorded gap, not a reason
+      matrix:                   # to discard the other seven
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Refuse to collect against an unfrozen frame
+      - name: Poll shard ${{ matrix.shard }}
         run: |
-          if [ ! -f frame/MANIFEST ]; then
-            echo "frame/MANIFEST does not exist — the frame is not frozen."
-            echo "The first snapshot must not precede the freeze commit."
-            echo "See PREREGISTRATION.md §2.1."
-            exit 1
-          fi
+          python scripts/collect.py \
+            --shards "$SHARDS" \
+            --shard "${{ matrix.shard }}" \
+            --rate "${{ inputs.rate || '0.5' }}"
 
-      - name: Poll
-        run: python scripts/collect.py --workers "${{ inputs.workers || 4 }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: register-shard-${{ matrix.shard }}
+          path: data/register/**
+          if-no-files-found: warn
+
+  merge:
+    needs: poll
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: register-shard-*
+          merge-multiple: true
+          path: data/register
+
+      - name: Merge shards into the week partition
+        id: merge
+        run: |
+          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
+          echo "week=$WEEK" >> "$GITHUB_OUTPUT"
+          python scripts/merge_shards.py --week "$WEEK" --shards "$SHARDS" | tee merge.log
+          {
+            echo "## Register — week $WEEK"
+            echo '```'
+            cat merge.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit the week into the register
         # The register's integrity claim rests on git history, so the poll is not
-        # finished until it is committed (§10.4). Rebase-and-retry because the
-        # recovery window may race a manual run.
+        # finished until it is committed (§10.4).
         run: |
           git config user.name  "halflife-collector"
           git config user.email "halflife-collector@users.noreply.github.com"
@@ -67,17 +124,10 @@ jobs:
             echo "nothing to commit — no new package-weeks captured"
             exit 0
           fi
-          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
-          git commit -m "Register: week ${WEEK}"
+          git commit -m "Register: week ${{ steps.merge.outputs.week }}"
           for i in 1 2 3; do
             git pull --rebase --autostash && git push && exit 0
             echo "push failed, retry $i"
             sleep 5
           done
           exit 1
-
-      - name: Run record
-        if: always()
-        run: |
-          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
-          test -f "data/register/${WEEK}/run.json" && cat "data/register/${WEEK}/run.json"

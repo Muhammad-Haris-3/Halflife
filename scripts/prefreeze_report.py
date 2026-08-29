@@ -13,11 +13,12 @@ result, which is what makes the frame's edge visible in the finding rather than
 buried in its methods. A gate that contradicts the document it enforces is not a
 gate, it is a bug.
 
-Note on what is NOT checked here: the weekly poll cost. It cannot be measured
-from a machine whose IP npm has throttled, and it is the one open risk recorded
-in PREREGISTRATION.md §10. It must be established on a GitHub Actions runner.
-This script reports it as UNRESOLVED rather than guessing, and the verdict is
-gated on it.
+Note on the weekly poll cost. It cannot be measured from this machine — npm
+rate-limits per egress IP, and the answer differs between a home address and a
+CI runner. It is established on GitHub Actions by scripts/poll_probe.py and
+.github/workflows/shard-probe.yml, and supplied here as the AGGREGATE
+seconds-per-package across all shards. Without it this script reports UNRESOLVED
+rather than guessing, and the verdict is gated on it.
 
 Writes nothing. Freezing is a separate deliberate act (scripts/freeze_frame.py).
 """
@@ -26,6 +27,9 @@ import json, os, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADMIT_FLOOR = 10000     # PREREGISTRATION.md §3 admissibility
 POLL_PROVEN = os.environ.get('HALFLIFE_POLL_PROVEN_SECONDS')
+CEILING_MIN = 360       # GitHub Actions job ceiling
+TARGET_MIN = 300        # the poll must fit inside this, leaving an hour to commit
+THROTTLE_MARGIN = 1.5   # a probe runs for minutes, the poll for hours
 
 
 def main():
@@ -82,18 +86,23 @@ def main():
 
     print('4. POLL COST  (PREREGISTRATION.md §10)')
     if POLL_PROVEN:
-        s = float(POLL_PROVEN)
-        mins = fr['size'] * s / 60
-        print('   proven rate    : %.2f s/pkg (HALFLIFE_POLL_PROVEN_SECONDS)' % s)
-        print('   weekly poll    : %.0f min (%.1f h) against a 6 h ceiling' % (mins, mins / 60))
-        poll_ok = mins < 300
-        print('   %s' % ('PASS' if poll_ok else 'FAIL — reduce frame by rank per §10'))
+        sec = float(POLL_PROVEN)
+        raw = fr['size'] * sec / 60
+        mins = raw * THROTTLE_MARGIN
+        print('   proven rate    : %.4f s/pkg aggregate (%.2f req/s) on a clean runner'
+              % (sec, 1 / sec))
+        print('   weekly poll    : %.0f min raw, %.0f min with the %.1fx margin'
+              % (raw, mins, THROTTLE_MARGIN))
+        print('   against        : %d min target, %d min ceiling' % (TARGET_MIN, CEILING_MIN))
+        poll_ok = mins < TARGET_MIN
+        print('   %s' % ('PASS' if poll_ok
+                         else 'FAIL — shard further, or reduce frame by rank per §10'))
     else:
         poll_ok = False
         print('   UNRESOLVED — no proven rate on a clean runner.')
-        print('   Local measurements are contaminated: 0.77-1.06 pkg/s with 643-931 429s')
-        print('   after this project throttled its own IP. Establish the rate on GitHub')
-        print('   Actions, then re-run with HALFLIFE_POLL_PROVEN_SECONDS=<s per pkg>.')
+        print('   npm rate-limits per egress IP, so this cannot be measured locally.')
+        print('   Run .github/workflows/shard-probe.yml, then re-run this with')
+        print('   HALFLIFE_POLL_PROVEN_SECONDS=<aggregate s per pkg>.')
     print()
 
     ok = poll_ok

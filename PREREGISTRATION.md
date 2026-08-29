@@ -10,12 +10,12 @@
 > at **68.9% capture** against the same 600-advisory sample. The rejected closure
 > rule is preserved in §2.2 and must not be reintroduced without an amendment.
 >
-> **Blocking the freeze: §10's weekly poll cost is unproven.** The frame is
-> 40,000 packages against a 6-hour job ceiling, and no clean measurement exists —
-> local figures were taken from an IP this project had already throttled. It must
-> be established on a GitHub Actions runner before this document is frozen. If
-> the poll cannot complete, the frame is reduced by rank per §10, *before* the
-> first snapshot.
+> **§10's poll cost is now established and no longer blocks the freeze.** npm
+> rate-limits the per-version endpoint per egress IP at under 1 req/s, so one
+> runner cannot poll the frame inside the 6-hour ceiling. Eight parallel shards on
+> distinct runner IPs were measured at **4.02 req/s aggregate with zero refusals**,
+> putting the full frame at **4.14 hours**. The frame is not reduced and capture
+> stays at 68.9%.
 >
 > **No snapshot has been taken. The clock has not started.**
 
@@ -381,37 +381,55 @@ written to the `runs` record rather than silently absorbed. A poll that exhausts
 its retry budget is recorded as incomplete for the packages it missed; those
 package-weeks are excluded, not interpolated.
 
-**The frame is 39,998 packages and the weekly poll cost is not yet established.**
-This is the one unresolved risk before freeze.
+**The weekly poll cost is established.** This was the one unresolved risk before
+freeze, and it is now measured rather than assumed.
 
 The per-version endpoint accepts no bulk queries at all, scoped or unscoped, so
-the poll is one individual request per frame package. Measured cleanly, before this project
-had made heavy use of the API: **0.85 s/package with zero `HTTP 429`s**, which
-implies ~9.4 hours sequentially and roughly 2.4 hours at four workers. Measured
-again after sustained querying had throttled the originating IP: **0.77–1.06
-packages/second with 643–931 429s in a single 400-package sample** — a
-measurement of the penalty box, not of npm.
+the poll is one individual request per frame package.
 
-**The binding constraint is concurrency, not npm's rate.** A single request to
-the per-version endpoint takes roughly 1.6 s at the median, so 40,000 of them are
-about 18 core-hours no matter how the poll is written, and the only question that
-decides the frame is how many can run at once before npm starts returning 429.
-A figure in seconds-per-package is therefore not a property of npm at all — it is
-a property of a chosen worker count — and the sequential and four-worker numbers
-above answer a question the collector does not ask.
+**The binding constraint is npm's rate limit per egress IP.** Measured on GitHub
+Actions runners, 2026-08-29:
 
-The honest position is that the true concurrency limit is unknown from this
-machine and must be established **on a GitHub Actions runner**, which is where
-the collector will run and which does not inherit the local IP's throttling
-history. [`scripts/poll_probe.py`](scripts/poll_probe.py) sweeps worker counts
-over disjoint rank-strided samples and reports the highest that stays clean of
-429s, projected to the full frame with a **1.5× margin** for the throttling a
-short probe does not run long enough to provoke.
+| Target rate, one runner | Refused | Achieved |
+|---|---|---|
+| 0.5 req/s | **0%** | 0.50 req/s |
+| 1 req/s | 27% | 0.73 req/s |
+| 2 req/s | 58% | 0.84 req/s |
+| 4 req/s | 77% | 0.94 req/s |
 
-If no concurrency completes the poll inside the 6-hour job ceiling with backoff,
-the frame is reduced by rank — top 30,000 (65.2% capture), then top 20,000
-(49.6%) — *before* the first snapshot, never after, and never by dropping
-individual packages the advisory feed has already touched.
+A single IP tops out below 1 req/s however it is driven, which puts the whole
+frame at roughly 22 hours against a 6-hour ceiling. Concurrency inside one job
+does not help: the ceiling is on the address, not on the connection count.
+
+**Sharding across runners does help, because the limit is per-IP and GitHub gives
+each matrix job its own address.** Four shards drew four distinct egress IPs and
+each behaved exactly as a lone runner did at the same target — 31% refused and
+0.69–0.70 req/s per shard, against 27% and 0.73 req/s for one runner by itself.
+Eight shards at the sustainable 0.5 req/s then returned **1,200 requests, zero
+refusals, 4.02 req/s aggregate**, which is **4.14 hours for the full frame** with
+the 1.5× margin below.
+
+The poll therefore runs as **8 parallel shards at 0.5 req/s each**, rank-strided
+so every shard spans the whole frame rather than owning a popularity band. Shard
+files are merged into one partition by `scripts/merge_shards.py`, so the
+register's shape does not record that collection was parallelised.
+
+Projections carry a **1.5× margin**, because a probe runs for minutes and the poll
+runs for hours, and a limit that tolerates the first can still bite during the
+second.
+
+**§10's earlier reasoning was wrong in a way worth recording.** This section
+previously treated the Actions runner as the clean environment and this project's
+own IP as the contaminated one, and specified that a poll which does not fit is
+handled by reducing the frame by rank. Both were mistaken. The runner is refused
+above 0.5 req/s while the home IP served roughly six times that cleanly on the
+same day, and the fallback assumed the constraint was a rate when it is a *per-IP*
+rate — which sharding addresses without touching the frame. **Rank reduction is
+therefore not invoked, and advisory capture stays at 68.9%.** The rule survives
+unchanged for the case it was written for: if no sharded configuration fits, the
+frame is reduced by rank — top 30,000, then top 20,000 — *before* the first
+snapshot, never after, and never by dropping individual packages the advisory
+feed has already touched.
 
 Compaction of closed partitions must land as its own reviewed change, never
 folded into the collector, and — per the correction in §10.4 — **before the

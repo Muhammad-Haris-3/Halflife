@@ -46,6 +46,30 @@ MAX_TRIES = 5           # per package, then it is recorded as a failure
 BACKOFF_BASE = 2.0      # seconds; exponential
 
 
+class Pacer:
+    """Token bucket holding the poll to a measured-sustainable request rate.
+
+    Measured on GitHub Actions runners 2026-08-29: a single egress IP sustains
+    0.5 req/s against api.npmjs.org with zero refusals, and is refused 27% of the
+    time at 1 req/s. Concurrency alone cannot beat that, so the collector paces
+    rather than racing, and buys throughput by sharding across runners instead —
+    eight shards measured 4.02 req/s aggregate with zero refusals.
+    """
+
+    def __init__(self, rate):
+        self.interval = 1.0 / rate
+        self.lock = threading.Lock()
+        self.next_at = time.time()
+
+    def wait(self):
+        with self.lock:
+            slot = max(time.time(), self.next_at)
+            self.next_at = slot + self.interval
+        delay = slot - time.time()
+        if delay > 0:
+            time.sleep(delay)
+
+
 class Stats:
     """Counts shared across workers. Every field here ends up in run.json."""
 
@@ -103,8 +127,9 @@ def iso_week(dt=None):
     return '%d-W%02d' % (y, w)
 
 
-def fetch(pkg, stats, budget):
+def fetch(pkg, stats, budget, pacer):
     """One package, with exponential backoff. Returns (row, None) or (None, reason)."""
+    pacer.wait()
     url = ENDPOINT % urllib.parse.quote(pkg, safe='@')
     last = 'unknown'
     for attempt in range(MAX_TRIES):
@@ -135,6 +160,7 @@ def fetch(pkg, stats, budget):
         if attempt < MAX_TRIES - 1:
             stats.bump('retries')
             time.sleep(BACKOFF_BASE ** attempt)
+            pacer.wait()
     return None, last
 
 
@@ -169,6 +195,11 @@ def main():
     ap.add_argument('--retry-budget', type=int, default=5000)
     ap.add_argument('--allow-unfrozen', action='store_true',
                     help='probe against an unfrozen frame; writes nothing to the register')
+    ap.add_argument('--rate', type=float, default=0.5,
+                    help='requests/second for THIS process (measured per-IP ceiling)')
+    ap.add_argument('--shards', type=int, default=1,
+                    help='split the frame across N runners, each with its own egress IP')
+    ap.add_argument('--shard', type=int, default=0, help='which shard this process polls')
     args = ap.parse_args()
 
     frozen = os.path.exists(MANIFEST)
@@ -181,15 +212,26 @@ def main():
     packages = json.load(open(RANKED, encoding='utf-8'))['packages']
     if args.limit:
         packages = packages[:args.limit]
+    frame_n = len(packages)
+    if args.shards > 1:
+        # Rank-strided, so each shard spans the whole frame. A contiguous slice
+        # would give the shard holding the head far more versions per request than
+        # the shard holding the tail, and the slowest shard sets the wall clock.
+        packages = packages[args.shard::args.shards]
 
     week = iso_week()
     outdir = os.path.join(REGISTER, week)
-    snap = os.path.join(outdir, 'snapshot.ndjson.gz')
+    part = 'snapshot.ndjson.gz' if args.shards == 1 else 'shard-%02d.ndjson.gz' % args.shard
+    snap = os.path.join(outdir, part)
 
     if frozen:
         os.makedirs(outdir, exist_ok=True)
         done = already_captured(snap)
         todo = [p for p in packages if p not in done]
+        if args.shards > 1:
+            print('shard %d of %d — %s of %s frame packages, %.2f req/s'
+                  % (args.shard, args.shards, '{:,}'.format(len(packages)),
+                     '{:,}'.format(frame_n), args.rate))
         print('week %s — %s packages, %s already captured, %s to fetch'
               % (week, '{:,}'.format(len(packages)), '{:,}'.format(len(done)),
                  '{:,}'.format(len(todo))))
@@ -199,12 +241,13 @@ def main():
         print('fetching %s packages with %d workers' % ('{:,}'.format(len(todo)), args.workers))
 
     stats, budget = Stats(), Budget(args.retry_budget)
+    pacer = Pacer(args.rate)
     started = time.time()
     write_lock = threading.Lock()
     out = gzip.open(snap, 'at', encoding='utf-8', newline='\n') if frozen else None
 
     def work(pkg):
-        row, reason = fetch(pkg, stats, budget)
+        row, reason = fetch(pkg, stats, budget, pacer)
         if row is not None and out is not None:
             line = json.dumps(row, separators=(',', ':'))
             with write_lock:
@@ -233,6 +276,8 @@ def main():
     elapsed = time.time() - started
     attempted = len(todo)
     captured = len(done) + stats.ok
+    # Against this shard's slice. Whole-frame coverage, which is what §9's 90%
+    # floor is about, can only be computed after every shard has reported.
     coverage = 100.0 * captured / len(packages) if packages else 0.0
     per_pkg = elapsed / max(attempted, 1)
 
@@ -253,6 +298,9 @@ def main():
     if frozen:
         run = {
             'week': week,
+            'shard': args.shard,
+            'shards': args.shards,
+            'rate': args.rate,
             'started_utc': datetime.datetime.fromtimestamp(
                 started, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'finished_utc': datetime.datetime.now(
@@ -275,7 +323,8 @@ def main():
         }
         # Append rather than overwrite: a resumed run must not erase the failures
         # of the run it is resuming.
-        runpath = os.path.join(outdir, 'run.json')
+        runpath = os.path.join(
+            outdir, 'run.json' if args.shards == 1 else 'run-%02d.json' % args.shard)
         prior = []
         if os.path.exists(runpath):
             existing = json.load(open(runpath, encoding='utf-8'))
