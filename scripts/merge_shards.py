@@ -29,11 +29,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--week', required=True, help='ISO week, e.g. 2026-W35')
     ap.add_argument('--shards', type=int, required=True)
+    ap.add_argument('--register-dir', default='',
+                    help='merge a rehearsal directory instead of the register')
     ap.add_argument('--keep-parts', action='store_true',
                     help='leave the per-shard files in place after merging')
     args = ap.parse_args()
 
-    outdir = os.path.join(REGISTER, args.week)
+    outdir = os.path.join(args.register_dir or REGISTER, args.week)
     if not os.path.isdir(outdir):
         print('REFUSING: %s does not exist — no shard wrote anything.' % outdir)
         return 2

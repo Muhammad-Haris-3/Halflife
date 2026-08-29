@@ -200,9 +200,26 @@ def main():
     ap.add_argument('--shards', type=int, default=1,
                     help='split the frame across N runners, each with its own egress IP')
     ap.add_argument('--shard', type=int, default=0, help='which shard this process polls')
+    ap.add_argument('--rehearsal-dir', default='',
+                    help='write to this directory instead of the register, and do not '
+                         'require a frozen frame — for proving the pipeline before freeze')
     args = ap.parse_args()
 
-    frozen = os.path.exists(MANIFEST)
+    register = REGISTER
+    rehearsing = bool(args.rehearsal_dir)
+    if rehearsing:
+        # A rehearsal that could touch the register is not a rehearsal. The
+        # register is append-only evidence; a practice run writing into it would
+        # put rows in the record that no advisory analysis should ever see.
+        target = os.path.abspath(args.rehearsal_dir)
+        if os.path.abspath(REGISTER) == target or target.startswith(os.path.abspath(REGISTER) + os.sep):
+            print('REFUSING: --rehearsal-dir points inside the register.')
+            return 2
+        register = target
+        print('REHEARSAL — writing to %s, not the register. Nothing here is evidence.'
+              % rel(register))
+
+    frozen = os.path.exists(MANIFEST) or rehearsing
     if not frozen and not args.allow_unfrozen:
         print('REFUSING: frame/MANIFEST does not exist — the frame is not frozen.')
         print('The first snapshot must not precede the freeze commit. See')
@@ -220,7 +237,7 @@ def main():
         packages = packages[args.shard::args.shards]
 
     week = iso_week()
-    outdir = os.path.join(REGISTER, week)
+    outdir = os.path.join(register, week)
     part = 'snapshot.ndjson.gz' if args.shards == 1 else 'shard-%02d.ndjson.gz' % args.shard
     snap = os.path.join(outdir, part)
 

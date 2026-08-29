@@ -1,0 +1,146 @@
+# Prove the collector before the frame is frozen.
+#
+# Every package-week the first real poll misses is permanently unobtainable, by
+# anyone, including npm. That makes "the first production run is also the first
+# test" an unusually bad trade here, so this exercises the identical code path —
+# 8 sharded collectors, the merge, the coverage arithmetic — against a capped
+# slice of the frame.
+#
+# It writes to a rehearsal directory and never to data/register, and
+# scripts/collect.py refuses a --rehearsal-dir that resolves inside the register.
+# It also never commits. A practice run that could leave rows in the record would
+# put data in the evidence that no analysis should ever see.
+#
+# What this does NOT prove: the full 2.8-hour wall clock, and whether npm's rate
+# limit holds over hours rather than minutes. That is what the 1.5x margin in
+# §10 is carrying.
+name: rehearse
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_shard:
+        description: Packages each shard polls (8 shards total)
+        default: "250"
+      rate:
+        description: Requests/second per shard
+        default: "0.5"
+
+env:
+  SHARDS: "8"
+  REHEARSAL_DIR: "rehearsal"
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Rehearse shard ${{ matrix.shard }}
+        run: |
+          python scripts/collect.py \
+            --shards "$SHARDS" \
+            --shard "${{ matrix.shard }}" \
+            --rate "${{ inputs.rate }}" \
+            --limit "$(( ${{ inputs.per_shard }} * 8 ))" \
+            --rehearsal-dir "$REHEARSAL_DIR"
+
+      - name: Confirm nothing reached the register
+        run: |
+          if [ -d data/register ]; then
+            echo "::error::shard ${{ matrix.shard }} wrote into data/register"
+            find data/register -type f
+            exit 1
+          fi
+          echo "register untouched"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rehearsal-shard-${{ matrix.shard }}
+          path: rehearsal/**
+          if-no-files-found: warn
+
+  merge:
+    needs: poll
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rehearsal-shard-*
+          merge-multiple: true
+          path: rehearsal
+
+      - name: Merge and report
+        run: |
+          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
+          python scripts/merge_shards.py \
+            --week "$WEEK" --shards "$SHARDS" --register-dir rehearsal | tee merge.log
+
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import gzip, json, os, glob
+          week = sorted(os.listdir('rehearsal'))[-1]
+          d = os.path.join('rehearsal', week)
+          rows = []
+          with gzip.open(os.path.join(d, 'snapshot.ndjson.gz'), 'rt', encoding='utf-8') as fh:
+              for line in fh:
+                  if line.strip():
+                      rows.append(json.loads(line))
+          run = json.load(open(os.path.join(d, 'run.json'), encoding='utf-8'))
+          names = [r['p'] for r in rows]
+          vers = [len(r['d']) for r in rows]
+          size = os.path.getsize(os.path.join(d, 'snapshot.ndjson.gz'))
+          frame = run['frame_size']
+
+          print('## Rehearsal — %s' % week)
+          print()
+          print('| check | result |')
+          print('|---|---|')
+          print('| packages captured | %s |' % format(len(rows), ','))
+          print('| distinct (no shard overlap) | %s |'
+                % ('yes' if len(set(names)) == len(names) else 'NO — %d duplicates'
+                   % (len(names) - len(set(names)))))
+          print('| shards reporting | %d of %d |' % (run['shards'] - len(run['shards_missing']),
+                                                     run['shards']))
+          print('| shards missing | %s |' % (run['shards_missing'] or 'none'))
+          print('| complete | %s |' % run['complete'])
+          print('| HTTP 429 | %d |' % run['http_429'])
+          print('| errors / retries | %d / %d |' % (run['errors'], run['retries']))
+          print('| unresolved (404) | %d |' % run['http_404_unresolved'])
+          print('| rows with no version data | %d |' % sum(1 for v in vers if v == 0))
+          print('| slowest shard | %.0f s |' % run['elapsed_seconds_max_shard'])
+          print()
+          per_pkg = size / max(len(rows), 1)
+          print('Gzipped **%.0f bytes/package**, so the full %s-package frame is '
+                '**%.0f MB/week** compressed and **%.2f GB/year** — against §10.4\\'s '
+                '0.8 GB/year estimate.'
+                % (per_pkg, format(frame, ','), per_pkg * frame / 1024 / 1024,
+                   per_pkg * frame * 52 / 1024 / 1024 / 1024))
+          print()
+          bad = (run['shards_missing'] or len(set(names)) != len(names)
+                 or run['http_429'] or not run['complete'])
+          print('**%s**' % ('Pipeline verified end to end. Safe to freeze.' if not bad
+                           else 'Rehearsal found problems — see the table. Do not freeze yet.'))
+          PY
+
+      - name: Confirm the register is still absent
+        run: |
+          if [ -d data/register ]; then
+            echo "::error::the merge job wrote into data/register"
+            exit 1
+          fi
+          echo "register untouched; nothing was committed"
