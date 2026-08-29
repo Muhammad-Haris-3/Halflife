@@ -432,9 +432,9 @@ snapshot, never after, and never by dropping individual packages the advisory
 feed has already touched.
 
 Compaction of closed partitions must land as its own reviewed change, never
-folded into the collector, and — per the correction in §10.4 — **before the
-register passes 1 GB**, which at 0.8 GB/year is inside the first year rather than
-at some unstated later point.
+folded into the collector, and — per the corrections in §10.4 — **before the
+register passes 1 GB**, which at a measured 1.43 GB/year happens around week 36
+rather than at some unstated later point.
 
 ### 10.4 Where the register lives, and why not a database
 
@@ -459,13 +459,35 @@ gzipped**.
 > that no longer existed. The figures above are the same measurement against the
 > frame actually specified.
 
-**What the correction changes.** Gzipped-files-in-git still wins, and for the
-reason below rather than on size. But the margin is 3.3× tighter than the
-superseded figures implied: GitHub warns above 1 GB and soft-limits around 5 GB,
-and gzipped blobs do not delta-compress, so each year costs the same again rather
-than less. Year one lands in warning territory and year five at the soft limit.
-Compaction is therefore **load-bearing inside the first year**, which is a
-schedule commitment, not the open-ended "before it bites" the draft carried.
+**Second correction, measured rather than estimated.** The figures above are
+projections from response sizes. A full 8-shard rehearsal on 2026-08-29 wrote
+2,000 real packages in the register's actual NDJSON-gzip format and measured
+**2,566 bytes per package raw and 736 gzipped** — a compression ratio of **0.29,
+not the 0.18 assumed**. Version strings and download counts are high-entropy and
+do not compress the way prose does.
+
+| | Estimated | **Measured** |
+|---|---|---|
+| raw per week | 86 MB | **98 MB** |
+| gzipped per week | 15 MB | **28 MB** |
+| gzipped per year | 0.80 GB | **1.43 GB** |
+
+**What both corrections change.** Gzipped-files-in-git still wins, and for the
+integrity reason below rather than on size. But the margin is far tighter than
+the original figures implied. GitHub warns above 1 GB and soft-limits around
+5 GB, and gzipped blobs do not delta-compress, so each year costs the same again
+rather than less:
+
+| | Year 1 | Year 2 | Year 3 | Year 4 |
+|---|---|---|---|---|
+| register size | 1.43 GB | 2.85 GB | 4.28 GB | 5.70 GB |
+| | past the warning | | | over the soft limit |
+
+The register crosses GitHub's warning threshold **inside year one** and its soft
+limit in **year four**. Compaction of closed partitions is therefore a
+**first-year commitment**, not the open-ended "before it bites" an earlier draft
+carried, and the first primary figure (§6) is not due for roughly 34 weeks —
+which is inside the window where this starts to matter.
 
 Cost is the smaller reason. The larger one is that this project's claim is the
 integrity of a record, and **git history is a stronger guarantee than a database

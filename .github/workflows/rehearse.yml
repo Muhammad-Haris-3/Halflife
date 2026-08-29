@@ -87,6 +87,7 @@ jobs:
 
       - name: Merge and report
         run: |
+          set -o pipefail   # else `| tee` reports tee success, not the script
           WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
           python scripts/merge_shards.py \
             --week "$WEEK" --shards "$SHARDS" --register-dir rehearsal | tee merge.log
@@ -126,8 +127,8 @@ jobs:
           print()
           per_pkg = size / max(len(rows), 1)
           print('Gzipped **%.0f bytes/package**, so the full %s-package frame is '
-                '**%.0f MB/week** compressed and **%.2f GB/year** — against §10.4\\'s '
-                '0.8 GB/year estimate.'
+                '**%.0f MB/week** compressed and **%.2f GB/year**, against the '
+                '0.8 GB/year estimated in section 10.4.'
                 % (per_pkg, format(frame, ','), per_pkg * frame / 1024 / 1024,
                    per_pkg * frame * 52 / 1024 / 1024 / 1024))
           print()
