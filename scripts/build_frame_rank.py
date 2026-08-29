@@ -27,7 +27,7 @@ Writes no MANIFEST. Freezing is a separate deliberate act (scripts/freeze_frame.
 """
 import json, os, sys, time, urllib.request, urllib.error
 
-UA = {'User-Agent': 'halflife-frame/0.1 (hariskhokhar975@gmail.com)'}
+UA = {'User-Agent': 'halflife/1.0 (+https://github.com/Muhammad-Haris-3/Halflife)'}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRAME = os.path.join(ROOT, 'frame')
 CAND = os.path.join(FRAME, 'candidates.tsv')

@@ -1,5 +1,5 @@
 import json,urllib.request,urllib.parse,random,time,math
-UA={'User-Agent':'halflife-frame/0.1 (hariskhokhar975@gmail.com)'}
+UA={'User-Agent':'halflife/1.0 (+https://github.com/Muhammad-Haris-3/Halflife)'}
 random.seed(20260828)
 def req(u,t=60):
     return json.load(urllib.request.urlopen(urllib.request.Request(u,headers=UA),timeout=t))

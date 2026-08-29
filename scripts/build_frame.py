@@ -9,7 +9,7 @@ frame/MANIFEST, which is a separate deliberate act.
 """
 import json, os, sys, time, urllib.request, urllib.parse, urllib.error, collections
 
-UA = {'User-Agent': 'halflife-frame/0.1 (hariskhokhar975@gmail.com)'}
+UA = {'User-Agent': 'halflife/1.0 (+https://github.com/Muhammad-Haris-3/Halflife)'}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAX_DEPTH = 3
 MAX_FETCH = 12000          # runaway guard; reported if hit

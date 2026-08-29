@@ -34,7 +34,7 @@ import argparse, datetime, gzip, json, os, sys, threading, time
 import urllib.request, urllib.parse, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
-UA = {'User-Agent': 'halflife-collector/1.0'}
+UA = {'User-Agent': 'halflife-collector/1.0 (+https://github.com/Muhammad-Haris-3/Halflife)'}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRAME = os.path.join(ROOT, 'frame')
 MANIFEST = os.path.join(FRAME, 'MANIFEST')

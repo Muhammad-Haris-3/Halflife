@@ -1,5 +1,5 @@
 import json,urllib.request,urllib.parse,re,time,datetime,statistics
-UA={'User-Agent':'halflife-feasibility/0.1 (hariskhokhar975@gmail.com)'}
+UA={'User-Agent':'halflife/1.0 (+https://github.com/Muhammad-Haris-3/Halflife)'}
 def get(u,data=None):
     r=urllib.request.Request(u,data=data,headers=dict(UA,**({'Content-Type':'application/json'} if data else {})))
     return json.load(urllib.request.urlopen(r,timeout=40))

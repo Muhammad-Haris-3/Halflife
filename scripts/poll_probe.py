@@ -38,7 +38,7 @@ import argparse, json, os, statistics, sys, threading, time
 import urllib.request, urllib.parse, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
-UA = {'User-Agent': 'halflife-probe/1.0'}
+UA = {'User-Agent': 'halflife-probe/1.0 (+https://github.com/Muhammad-Haris-3/Halflife)'}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RANKED = os.path.join(ROOT, 'frame', 'frame_ranked.json')
 ENDPOINT = 'https://api.npmjs.org/versions/%s/last-week'
