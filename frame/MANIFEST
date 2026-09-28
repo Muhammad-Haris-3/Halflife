@@ -1,0 +1,28 @@
+HALFLIFE FRAME MANIFEST
+=======================
+
+frozen_at_utc         : 2026-09-28T23:20:16Z
+frame_file            : frame/frame_ranked.json
+frame_sha256          : a2340fecf4b06f396fe248bd603384c65431103cc231760d13cf5380e55dd1d2
+candidates_sha256     : 66bbfad62b31593d74c0251d4287d98389d303475ea76f3166832000f5088267  (frozen input; rebuild is deterministic over it)
+preregistration_sha256: 3d3172fdd7fffc5503555f0bdd2ef2fbbd86bca3928a40f9a2d245647e0aeaba
+
+rule                  : distinct npm packages among the top-N ecosyste.ms download-ranked rows, frozen at build date
+candidate_source      : packages.ecosyste.ms/api/v1/registries/npmjs.org/packages?sort=downloads&order=desc
+frame_built           : 2026-08-28
+
+frame_size            : 39998
+frame_unscoped        : 19511
+frame_scoped          : 20487
+
+capture_sample        : 600 advisories, 70 days, 2026-06-18..2026-08-27
+capture_realised_pct  : 68.9
+
+ACCEPTED COVERAGE COST (PREREGISTRATION.md §2.3 — publish with every result)
+advised_outside_frame_over_100k : 0
+advised_outside_frame_over_10k  : 20
+advisories_lost                 : 84 of 928 = 9.1%
+largest_advised_outside_frame   : 58089 weekly
+
+The frame is closed. Packages appearing after this timestamp are outside
+the primary analysis regardless of popularity. See PREREGISTRATION.md §2.1.
