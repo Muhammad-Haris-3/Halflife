@@ -11,11 +11,11 @@ that record: **39,998 npm packages polled weekly**, committed to a public git
 history so that what was written, and when, is checkable by any reader rather
 than asserted by its author.
 
-> **Status: not started. Nothing collected, nothing published.**
-> The frame is built and the collector is rehearsed end to end on real
-> infrastructure, but `frame/MANIFEST` does not exist yet, so the frame is not
-> frozen and no snapshot has been taken. The first primary figure is roughly 34
-> weeks after the freeze, because [`PREREGISTRATION.md`](PREREGISTRATION.md) §3
+> **Status: frame frozen 2026-09-28T23:20Z. Collecting; nothing published.**
+> [`frame/MANIFEST`](frame/MANIFEST) fixes the 39,998-package frame and the
+> hash of the pre-registration it was frozen under, and the weekly poll runs
+> from the first cron window after that commit. The first primary figure is
+> roughly 34 weeks after the freeze, because [`PREREGISTRATION.md`](PREREGISTRATION.md) §3
 > requires 8 pre-advisory weeks per event and §6 requires 150 events matured
 > through a horizon group before anything is reported.
 
