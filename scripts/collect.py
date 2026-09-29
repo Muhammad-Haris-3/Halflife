@@ -244,6 +244,14 @@ def main():
     if frozen:
         os.makedirs(outdir, exist_ok=True)
         done = already_captured(snap)
+        if args.shards > 1:
+            # The recovery window. Once the primary window's shards are merged and
+            # committed they exist only as snapshot.ndjson.gz, so the shard file is
+            # gone and would read as "nothing captured". Without this the Wednesday
+            # run re-polls the whole frame, and the merge then replaces Monday's
+            # observations with Wednesday's.
+            done |= already_captured(os.path.join(outdir, 'snapshot.ndjson.gz'))
+            done &= set(packages)       # this shard's slice only, or coverage overcounts
         todo = [p for p in packages if p not in done]
         if args.shards > 1:
             print('shard %d of %d — %s of %s frame packages, %.2f req/s'

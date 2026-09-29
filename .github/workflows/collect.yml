@@ -103,7 +103,10 @@ jobs:
       - name: Merge shards into the week partition
         id: merge
         run: |
-          WEEK=$(python -c "import sys;sys.path.insert(0,'scripts');from collect import iso_week;print(iso_week())")
+          # The week the shards wrote, not the week it is now: a run dispatched
+          # late on a Sunday merges on Monday, and the clock would name a week
+          # with nothing in it.
+          WEEK=$(python -c "import glob,os,sys;sys.path.insert(0,'scripts');from collect import iso_week;w=sorted({os.path.basename(os.path.dirname(p)) for p in glob.glob('data/register/*/shard-*.ndjson.gz')});print(w[-1] if w else iso_week())")
           echo "week=$WEEK" >> "$GITHUB_OUTPUT"
           python scripts/merge_shards.py --week "$WEEK" --shards "$SHARDS" | tee merge.log
           {

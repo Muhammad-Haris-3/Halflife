@@ -44,17 +44,15 @@ def main():
     frame_n = len(frame)
 
     snap = os.path.join(outdir, 'snapshot.ndjson.gz')
-    seen, rows, missing = set(), 0, []
+    tmp = snap + '.tmp'
+    seen, rows, missing, truncated = set(), 0, [], []
 
-    with gzip.open(snap, 'wt', encoding='utf-8', newline='\n') as out:
-        for k in range(args.shards):
-            part = os.path.join(outdir, 'shard-%02d.ndjson.gz' % k)
-            if not os.path.exists(part):
-                missing.append(k)
-                print('  shard %02d: MISSING' % k)
-                continue
-            n = 0
-            with gzip.open(part, 'rt', encoding='utf-8') as fh:
+    def copy_rows(path, out):
+        """Append path's rows not already seen. A gzip stream cut mid-write (a
+        shard killed at its timeout) keeps every row readable before the cut."""
+        n = 0
+        try:
+            with gzip.open(path, 'rt', encoding='utf-8') as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -64,17 +62,48 @@ def main():
                     except (ValueError, KeyError):
                         continue
                     if pkg in seen:
-                        # Shards are disjoint by construction, so this means a
-                        # shard was re-run with a different --shards value. Keep
-                        # one row and say so rather than writing the package twice.
+                        # Shards are disjoint by construction, and a recovery
+                        # window skips what is already merged, so a repeat means a
+                        # re-run with different arguments. The first observation
+                        # stands: the register is append-only.
                         continue
                     seen.add(pkg)
                     out.write(line + '\n')
                     n += 1
-            rows += n
-            print('  shard %02d: %s packages' % (k, '{:,}'.format(n)))
+        except (OSError, EOFError):
+            return n, True
+        return n, False
 
+    # Written beside the snapshot and swapped in at the end, because the
+    # committed snapshot is an input: a recovery window's merge must keep every
+    # row the primary window already committed, never re-derive the week from
+    # the recovery shards alone.
+    with gzip.open(tmp, 'wt', encoding='utf-8', newline='\n') as out:
+        if os.path.exists(snap):
+            prior, _ = copy_rows(snap, out)
+            print('  committed: %s packages kept from earlier in the week' % '{:,}'.format(prior))
+        for k in range(args.shards):
+            part = os.path.join(outdir, 'shard-%02d.ndjson.gz' % k)
+            if not os.path.exists(part):
+                missing.append(k)
+                print('  shard %02d: MISSING' % k)
+                continue
+            n, cut = copy_rows(part, out)
+            if cut:
+                truncated.append(k)
+            rows += n
+            print('  shard %02d: %s packages%s' % (k, '{:,}'.format(n),
+                                                   ' (stream truncated — kept what was readable)' if cut else ''))
+    os.replace(tmp, snap)
+
+    # Earlier windows' run records are evidence too; a recovery merge extends them.
     runs, failed_total, gone_total = [], {}, []
+    runpath = os.path.join(outdir, 'run.json')
+    if os.path.exists(runpath):
+        runs.extend(json.load(open(runpath, encoding='utf-8')).get('shard_runs') or [])
+        for r in runs:
+            failed_total.update(r.get('failed') or {})
+            gone_total.extend(r.get('gone_from_npm') or [])
     for k in range(args.shards):
         rp = os.path.join(outdir, 'run-%02d.json' % k)
         if not os.path.exists(rp):
@@ -86,12 +115,19 @@ def main():
             gone_total.extend(r.get('gone_from_npm') or [])
 
     coverage = 100.0 * len(seen) / frame_n if frame_n else 0.0
-    complete = not missing and all(r.get('complete') for r in runs) and len(runs) == args.shards
+    # A failure that a later window recovered is no longer a gap.
+    failed_total = {p: why for p, why in failed_total.items() if p not in seen}
+    # Complete means every frame package was either captured or is gone from npm.
+    # Counting run records cannot say that once a recovery window has added its own.
+    unaccounted = set(frame) - seen - set(gone_total)
+    complete = not missing and not truncated and not unaccounted
 
     merged = {
         'week': args.week,
         'shards': args.shards,
         'shards_missing': missing,
+        'shards_truncated': truncated,
+        'unaccounted': len(unaccounted),
         'frame_size': frame_n,
         'captured': len(seen),
         'coverage_pct': round(coverage, 3),
