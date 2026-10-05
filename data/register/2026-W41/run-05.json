@@ -1,0 +1,25 @@
+[
+ {
+  "week": "2026-W41",
+  "shard": 5,
+  "shards": 8,
+  "rate": 0.5,
+  "started_utc": "2026-10-05T12:57:08Z",
+  "finished_utc": "2026-10-05T15:43:46Z",
+  "frame_size": 5000,
+  "attempted": 5000,
+  "captured": 5000,
+  "coverage_pct": 100.0,
+  "complete": true,
+  "retry_budget_exhausted": false,
+  "elapsed_seconds": 9998.2,
+  "seconds_per_package": 1.9996,
+  "workers": 4,
+  "http_429": 0,
+  "http_404_unresolved": 0,
+  "errors": 0,
+  "retries": 0,
+  "gone_from_npm": [],
+  "failed": {}
+ }
+]
